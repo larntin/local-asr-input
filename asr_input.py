@@ -20,6 +20,7 @@ import ctypes
 import hashlib
 import json
 import logging
+import logging.handlers
 import math
 import os
 import queue
@@ -51,12 +52,14 @@ COLORS = {
 }
 ACCENTS = {"loading": "#8a8f9c", "idle": "#4cc38a", "editing": "#4cc38a", "recording": "#ff5a5f", "transcribing": "#ffb547", "optimizing": "#b18cff"}
 
-handlers = [logging.FileHandler(LOG_FILE, encoding="utf-8")]
+# 每天零点换新文件（asr_input.log.2026-09-23 这样），只留最近 7 天
+handlers = [logging.handlers.TimedRotatingFileHandler(LOG_FILE, when="midnight", backupCount=7, encoding="utf-8")]
 if sys.stdout is not None:  # pythonw 下没有控制台
     handlers.append(logging.StreamHandler(sys.stdout))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S", handlers=handlers)
 log = logging.getLogger("asr")
 logging.getLogger("faster_whisper").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)  # 每次调 LLM 的请求行太啰嗦
 # 后台线程里没被捕获的异常也记到日志
 threading.excepthook = lambda a: log.error(f"[线程异常] {a.thread.name}", exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
 
@@ -235,6 +238,8 @@ DEFAULT_CONFIG = {
         "llm": "✦ 优化提示词用的大模型（OpenAI 兼容接口，默认阿里百炼）。base_url_env / api_key_env 填环境变量名，"
                "key 不写在这里；model 可换 qwen3-max、qwen-plus 等；system_prompt 是整理规则",
         "normalize_punctuation": "true：把 ﹐﹑ 等小号标点、挨着中文的英文标点整理成正常中文标点",
+        "auto_llm": "true：识别完成后自动用 LLM 优化新说的这一段（太短的不优化）",
+        "log_level": "info = 详细（会记录识别出的文字）；error = 只记错误和警告。日志只保留最近 7 天",
         "按键写法": "修饰键 Ctrl / Alt / Shift / Win（Win 只能用于全局热键）+ 一个键，用 + 连接，如 Ctrl+Alt+F9。"
                   "可用的键：F1~F24、A~Z、0~9、Enter、Esc、Space、Tab、Backspace、Insert、Delete、Home、End、"
                   "PageUp、PageDown、Pause、ScrollLock",
@@ -252,6 +257,8 @@ DEFAULT_CONFIG = {
     },
     "font_size": 15,
     "normalize_punctuation": True,
+    "auto_llm": True,
+    "log_level": "info",
     "model": "large-v3-turbo",
     "language": "zh",
     "initial_prompt": "以下是普通话的句子，使用简体中文，其中可能夹杂英文编程术语。",
@@ -310,12 +317,23 @@ def validate_config(cfg):
             seen[parsed[name]] = name
     if not (isinstance(cfg["font_size"], int) and 8 <= cfg["font_size"] <= 40):
         raise ValueError("font_size 要是 8~40 之间的整数")
+    if cfg["log_level"] not in LOG_LEVELS:
+        raise ValueError(f"log_level 只能是 {' / '.join(LOG_LEVELS)}")
     if not (isinstance(cfg["llm"]["timeout"], int) and 1 <= cfg["llm"]["timeout"] <= 300):
         raise ValueError("llm.timeout 要是 1~300 之间的整数（秒）")
 
 
+LOG_LEVELS = {"info": logging.INFO, "error": logging.WARNING}  # error 档也保留警告，出问题时更好查
+AUTO_LLM_MIN_CHARS = 6  # 自动优化时，少于这么多字（如「好的」「继续」）直接保留原文
+
+
+def apply_log_level(level):
+    logging.getLogger().setLevel(LOG_LEVELS[level])
+
+
 def save_config(cfg):
-    order = ["_说明", "hotkeys", "font_size", "normalize_punctuation", "model", "language", "initial_prompt", "llm"]
+    order = ["_说明", "hotkeys", "font_size", "normalize_punctuation", "auto_llm", "log_level",
+             "model", "language", "initial_prompt", "llm"]
     data = {k: cfg[k] for k in order if k in cfg} | {k: v for k, v in cfg.items() if k not in order}
     data["_说明"] = DEFAULT_CONFIG["_说明"]
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -422,7 +440,7 @@ def load_model(name, language):
                 list(model.transcribe(warmup, language=language)[0])  # CUDA 库缺失会在这里才报错
                 return model, device
             except Exception as e:
-                log.info(f"[模型] {device}/{'本地' if local_only else '下载'} 失败：{e}")
+                log.warning(f"[模型] {device}/{'本地' if local_only else '下载'} 失败：{e}")
     raise RuntimeError("模型加载失败")
 
 
@@ -435,6 +453,7 @@ class SettingsDialog:
     WHISPER_MODELS = ["large-v3-turbo", "medium", "small", "large-v3"]
     LANGUAGES = ["zh", "en", "ja", "ko"]
     LLM_MODELS = ["deepseek-v4-flash", "qwen3-max", "qwen-plus", "qwen-flash"]
+    LOG_LEVEL_NAMES = {"info": "详细（会记录识别出的文字）", "error": "仅错误和警告"}
 
     def __init__(self, app):
         self.app = app
@@ -517,9 +536,14 @@ class SettingsDialog:
         self.prompt_var = tk.StringVar(value=cfg["initial_prompt"])
         self._row("识别提示词", tk.Entry(self.body, textvariable=self.prompt_var, **self.entry_style))
         self.punct_var = tk.BooleanVar(value=cfg["normalize_punctuation"])
-        self._row("", tk.Checkbutton(self.body, text="自动整理标点（﹐﹑ → ，、；挨着中文的英文标点转全角）", variable=self.punct_var,
-                                     bg=c["bg"], fg=c["fg"], selectcolor=c["bar"], activebackground=c["bg"],
-                                     activeforeground=c["fg"], font=(UI_FONT, 10), anchor="w"))
+        self._row("", self._check("自动整理标点（﹐﹑ → ，、；挨着中文的英文标点转全角）", self.punct_var))
+        self.auto_llm_var = tk.BooleanVar(value=cfg["auto_llm"])
+        self._row("", self._check("识别完成后自动用 ✦ LLM 优化（只优化新说的一段）", self.auto_llm_var))
+        self._section("日志", "只保留最近 7 天")
+        self.log_level_var = tk.StringVar(value=self.LOG_LEVEL_NAMES[cfg["log_level"]])
+        cb = self._combo(self.log_level_var, list(self.LOG_LEVEL_NAMES.values()))
+        cb.configure(state="readonly")
+        self._row("日志级别", cb)
 
         foot = tk.Frame(w, bg=c["bar"], padx=px(22), pady=px(10))
         foot.pack(fill="x")
@@ -599,6 +623,11 @@ class SettingsDialog:
             .grid(row=self.row, column=0, sticky="ne" if top else "e", padx=(0, px(12)), pady=px(3))
         widget.grid(row=self.row, column=1, sticky=sticky, pady=px(3), ipady=px(2) if isinstance(widget, tk.Entry) else 0)
         self.row += 1
+
+    def _check(self, text, var):
+        c = COLORS
+        return tk.Checkbutton(self.body, text=text, variable=var, bg=c["bg"], fg=c["fg"], selectcolor=c["bar"],
+                              activebackground=c["bg"], activeforeground=c["fg"], font=(UI_FONT, 10), anchor="w")
 
     def _combo(self, var, values, width=None):
         cb = ttk.Combobox(self.body, textvariable=var, values=values, style="Dark.TCombobox", font=(UI_FONT, 10))
@@ -684,6 +713,8 @@ class SettingsDialog:
         new["language"] = self.lang_var.get().strip()
         new["initial_prompt"] = self.prompt_var.get().strip()
         new["normalize_punctuation"] = bool(self.punct_var.get())
+        new["auto_llm"] = bool(self.auto_llm_var.get())
+        new["log_level"] = {v: k for k, v in self.LOG_LEVEL_NAMES.items()}[self.log_level_var.get()]
         new["llm"].update(model=self.llm_model_var.get().strip(), base_url_env=self.base_env_var.get().strip(),
                           api_key_env=self.key_env_var.get().strip(),
                           system_prompt=self.system_text.get("1.0", "end-1c").strip())
@@ -860,11 +891,17 @@ class App:
             m.create_oval(3, h / 2 - 4, 11, h / 2 + 4, fill=ACCENTS.get(self.state, ACCENTS["idle"]), width=0)
         self.root.after(60, self._animate)
 
-    def run_llm(self):
-        """✦：把文本框内容交给大模型整理成提示词，结果替换文本框（Ctrl+Z 可以撤回原文）。"""
-        text = self._get_text()
+    def run_llm(self, start="1.0", end="end-1c"):
+        """✦：把 start~end 这段（默认整个文本框）交给大模型整理成提示词，结果替换这段（Ctrl+Z 可以撤回原文）。
+        识别后自动优化时只传新说的那一段，前面已经整理过的内容不会被反复改写。"""
+        text = self.text.get(start, end).strip()
         if self.state != "editing" or not text:
             return
+        # 用 mark 记住范围：优化期间用户改了别处的字，范围也跟着移动
+        self.text.mark_set("llm_start", start)
+        self.text.mark_gravity("llm_start", "left")
+        self.text.mark_set("llm_end", end)
+        self.text.mark_gravity("llm_end", "right")
         self.llm_btn.config(bg=COLORS["llm_fg"], fg=COLORS["llm_bg"])  # 按钮反色闪一下
         self.root.after(250, lambda: self.llm_btn.config(bg=COLORS["llm_bg"], fg=COLORS["llm_fg"]))
         self.llm_seq += 1
@@ -905,8 +942,9 @@ class App:
         # 删除 + 插入合成一步撤销（Tk 默认会在两者之间自动插分隔点，Ctrl+Z 就只撤回一半）
         self.text.edit_separator()
         self.text.config(autoseparators=False)
-        self.text.delete("1.0", "end")
-        self.text.insert("1.0", result)
+        self.text.delete("llm_start", "llm_end")
+        self.text.insert("llm_start", result)
+        self.text.mark_set("insert", f"llm_start + {len(result)}c")
         self.text.edit_separator()
         self.text.config(autoseparators=True)
         self.text.focus_force()
@@ -924,7 +962,7 @@ class App:
             self.events.put(("model", model))
             log.info(f"[模型] 就绪：{device}，用时 {time.time() - t:.1f}s。按 {self.keys['start_record']} 开始说话。")
         except Exception as e:
-            log.info(f"[模型] {e}")
+            log.error(f"[模型] {e}")
             self.events.put(("fatal", f"模型加载失败：{e}\n详见日志 {LOG_FILE}"))
 
     def _transcribe(self, audio):
@@ -938,7 +976,7 @@ class App:
             if self.cfg["normalize_punctuation"]:
                 text = normalize_punctuation(text)
         except Exception as e:
-            log.info(f"[识别] 出错：{e}")
+            log.error(f"[识别] 出错：{e}")
             text = ""
         self.events.put(("result", text))
 
@@ -1047,11 +1085,16 @@ class App:
     def on_result(self, text):
         log.info(f"[识别] {text!r}")
         self._set_state("editing")
-        if text:
-            self.text.insert("insert", text)
-        else:
+        if not text:
             self._notify("empty")
-        self.show("识别完成" if text else "没识别到内容")
+            self.show("没识别到内容")
+            return
+        start = self.text.index("insert")
+        self.text.insert("insert", text)
+        end = self.text.index("insert")
+        self.show("识别完成")
+        if self.cfg["auto_llm"] and len(text) >= AUTO_LLM_MIN_CHARS:
+            self.run_llm(start, end)  # 只优化这次新说的一段
 
     def show(self, status):
         """显示弹窗；status 只写日志，界面上用图标表示。"""
@@ -1076,7 +1119,7 @@ class App:
         if ok:
             log.info(f"[切回] 成功 {window_title(self.target_hwnd)!r}")
         else:
-            log.info(f"[切回] 失败，目标 {window_title(self.target_hwnd)!r}，当前前台 {window_title(user32.GetForegroundWindow())!r}")
+            log.warning(f"[切回] 失败，目标 {window_title(self.target_hwnd)!r}，当前前台 {window_title(user32.GetForegroundWindow())!r}")
         return ok
 
     def send(self):
@@ -1087,12 +1130,12 @@ class App:
             return
         self._set_clipboard(text)
         if not self._return_to_target():
-            log.info("[粘贴] 文字已在剪贴板，请手动 Ctrl+V。")
+            log.warning("[粘贴] 文字已在剪贴板，请手动 Ctrl+V。")
             return
 
         def paste():
             if user32.GetForegroundWindow() != self.target_hwnd and not focus_window(self.target_hwnd):
-                log.info("[粘贴] 目标窗口失去焦点，文字已在剪贴板，请手动 Ctrl+V。")
+                log.warning("[粘贴] 目标窗口失去焦点，文字已在剪贴板，请手动 Ctrl+V。")
                 return
             send_keys(VK_CONTROL, VK_V)
             log.info(f"[上屏] {text!r}")
@@ -1134,10 +1177,11 @@ def main():
     try:
         cfg = load_config()
     except Exception as e:
-        log.info(f"[配置] 出错：{e}")
+        log.error(f"[配置] 出错：{e}")
         message_box(f"配置文件有误：\n{e}\n\n文件：{CONFIG_FILE}")
         subprocess.Popen(["notepad.exe", CONFIG_FILE])
         return
+    apply_log_level(cfg["log_level"])
     app = App(cfg)
     app.run()
     if app.restart:

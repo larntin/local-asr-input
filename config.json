@@ -10,6 +10,8 @@
     "font_size": "输入框文字大小（磅）",
     "llm": "✦ 优化提示词用的大模型（OpenAI 兼容接口，默认阿里百炼）。base_url_env / api_key_env 填环境变量名，key 不写在这里；model 可换 qwen3-max、qwen-plus 等；system_prompt 是整理规则",
     "normalize_punctuation": "true：把 ﹐﹑ 等小号标点、挨着中文的英文标点整理成正常中文标点",
+    "auto_llm": "true：识别完成后自动用 LLM 优化新说的这一段（太短的不优化）",
+    "log_level": "info = 详细（会记录识别出的文字）；error = 只记错误和警告。日志只保留最近 7 天",
     "按键写法": "修饰键 Ctrl / Alt / Shift / Win（Win 只能用于全局热键）+ 一个键，用 + 连接，如 Ctrl+Alt+F9。可用的键：F1~F24、A~Z、0~9、Enter、Esc、Space、Tab、Backspace、Insert、Delete、Home、End、PageUp、PageDown、Pause、ScrollLock",
     "model": "faster-whisper 模型名：large-v3-turbo（默认，快且中文准）/ medium 等，本机没有时首次会自动下载",
     "生效": "改完后在托盘图标右键点「重启」生效"
@@ -25,6 +27,8 @@
   },
   "font_size": 13,
   "normalize_punctuation": true,
+  "auto_llm": true,
+  "log_level": "info",
   "model": "large-v3-turbo",
   "language": "zh",
   "initial_prompt": "以下是普通话的句子，使用简体中文，其中可能夹杂英文编程术语。",
