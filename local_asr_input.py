@@ -1,6 +1,7 @@
-"""本地语音输入：热键录音 -> faster-whisper 识别 -> 弹窗编辑 -> 粘贴回原窗口（PowerShell 等）。
+"""本声（Local ASR Input）：免费开源的本地语音输入工具。
+热键录音 -> faster-whisper 本机识别 -> 弹窗编辑（可选 LLM 整理）-> 粘贴回原窗口。
 
-用法：双击 start.bat（后台运行，日志写到 asr_input.log），或 python asr_input.py（带控制台）
+用法：双击 start.bat（后台运行，日志写到 local_asr_input.log），或 python local_asr_input.py（带控制台）
   - 快捷键都在同目录的 config.json 里配置（首次运行自动生成），默认：
       F9             全局：开始录音 / 结束录音；弹窗打开时再按 = 接着说，结果插到光标处
       Enter          弹窗内：上屏（复制到剪贴板 + 粘贴到原窗口，不回车）
@@ -40,9 +41,10 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 from PIL import Image, ImageDraw, ImageTk
 
+APP_NAME = "本声"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE = os.path.join(APP_DIR, "asr_input.log")
-CONFIG_FILE = os.environ.get("ASR_INPUT_CONFIG") or os.path.join(APP_DIR, "config.json")
+LOG_FILE = os.path.join(APP_DIR, "local_asr_input.log")
+CONFIG_FILE = os.environ.get("LOCAL_ASR_INPUT_CONFIG") or os.path.join(APP_DIR, "config.json")
 SAMPLE_RATE = 16000
 PASTE_DELAY_MS = 120  # 切回原窗口后等多久再粘贴
 UI_FONT = "Microsoft YaHei UI"
@@ -52,7 +54,7 @@ COLORS = {
 }
 ACCENTS = {"loading": "#8a8f9c", "idle": "#4cc38a", "editing": "#4cc38a", "recording": "#ff5a5f", "transcribing": "#ffb547", "optimizing": "#b18cff"}
 
-# 每天零点换新文件（asr_input.log.2026-09-23 这样），只留最近 7 天
+# 每天零点换新文件（local_asr_input.log.2026-09-23 这样），只留最近 7 天
 handlers = [logging.handlers.TimedRotatingFileHandler(LOG_FILE, when="midnight", backupCount=7, encoding="utf-8")]
 if sys.stdout is not None:  # pythonw 下没有控制台
     handlers.append(logging.StreamHandler(sys.stdout))
@@ -145,13 +147,13 @@ def focus_window(hwnd):
 
 
 def message_box(text):
-    user32.MessageBoxW(None, text, "语音输入", 0x40 | 0x40000)  # 信息图标 + 置顶
+    user32.MessageBoxW(None, text, APP_NAME, 0x40 | 0x40000)  # 信息图标 + 置顶
 
 
 def acquire_single_instance():
     """用命名互斥量保证同一份配置只有一个实例；返回的句柄要一直持有，进程退出时系统自动释放。"""
     key = hashlib.md5(os.path.abspath(CONFIG_FILE).lower().encode()).hexdigest()[:12]
-    handle = kernel32.CreateMutexW(None, False, f"Local\\asr_input_{key}")
+    handle = kernel32.CreateMutexW(None, False, f"Local\\local_asr_input_{key}")
     if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
         return None
     return handle
@@ -357,6 +359,12 @@ def resolve_base_url(value):
     return v if v.lower().startswith(("http://", "https://")) else os.environ.get(v, "").strip()
 
 
+def llm_configured(llm):
+    """当前协议的地址和 key 都能取到。没配置时自动优化直接跳过，不打扰、也不会把文字发出去。"""
+    prof = llm[llm["protocol"]]
+    return bool(resolve_base_url(prof["base_url"]) and os.environ.get(prof["api_key_env"].strip(), "").strip())
+
+
 def describe_llm(llm):
     """「Anthropic · deepseek-v4-flash」这样的简短描述，给界面和日志用。"""
     return f"{LLM_PROTOCOLS[llm['protocol']]} · {llm[llm['protocol']]['model']}"
@@ -375,8 +383,10 @@ def llm_complete(llm, system, text, max_tokens=2048):
     if proto == "openai":
         from openai import OpenAI  # 用到时才导入，不拖慢启动
         client = OpenAI(base_url=base_url, api_key=api_key, timeout=llm["timeout"])
+        # enable_thinking 是阿里百炼的专有参数（关掉 qwen3 等模型的思考，快很多）；别家（如 OpenAI 官方）遇到不认识的参数会报错
+        extra = {"enable_thinking": False} if "aliyuncs.com" in base_url else {}
         resp = client.chat.completions.create(
-            model=prof["model"], temperature=0.2, extra_body={"enable_thinking": False},
+            model=prof["model"], temperature=0.2, extra_body=extra,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": text}],
         )
         return (resp.choices[0].message.content or "").strip()
@@ -530,7 +540,7 @@ class SettingsDialog:
 
         w = self.win = tk.Toplevel(app.root)
         w.withdraw()
-        w.title("语音输入 · 设置")
+        w.title(f"{APP_NAME} · 设置")
         w.configure(bg=c["bg"])
         w.attributes("-topmost", True)
         w.resizable(False, False)
@@ -917,7 +927,7 @@ class App:
         self.settings = None  # 打开着的设置对话框
 
         self.root = tk.Tk()
-        self.root.title("语音输入")
+        self.root.title(APP_NAME)
         # Tk 回调里的异常默认只打到 stderr（pythonw 下直接丢失），改为记日志
         self.root.report_callback_exception = lambda *exc: log.error("[界面异常]", exc_info=exc)
         self.root.attributes("-topmost", True)
@@ -926,7 +936,7 @@ class App:
         self.root.withdraw()
 
         self.tray = pystray.Icon(
-            "asr_input", make_icon(TRAY_COLORS["loading"]), "语音输入：" + self._tray_text(),
+            "local_asr_input", make_icon(TRAY_COLORS["loading"]), f"{APP_NAME}：" + self._tray_text(),
             menu=pystray.Menu(
                 pystray.MenuItem(lambda item: "状态：" + self._tray_text(), None, enabled=False),
                 pystray.MenuItem(lambda item: "LLM：" + describe_llm(self.cfg["llm"]), None, enabled=False),
@@ -1177,7 +1187,7 @@ class App:
         self.state = state
         self.accent.config(bg=ACCENTS["loading" if self.model is None else state])
         self.tray.icon = make_icon(TRAY_COLORS["loading" if self.model is None else state])
-        self.tray.title = "语音输入：" + self._tray_text()
+        self.tray.title = f"{APP_NAME}：" + self._tray_text()
         self.tray.update_menu()
 
     def open_settings(self):
@@ -1249,7 +1259,7 @@ class App:
         self.text.insert("insert", text)
         end = self.text.index("insert")
         self.show("识别完成")
-        if self.cfg["auto_llm"] and len(text) >= AUTO_LLM_MIN_CHARS:
+        if self.cfg["auto_llm"] and len(text) >= AUTO_LLM_MIN_CHARS and llm_configured(self.cfg["llm"]):
             self.run_llm(start, end)  # 只优化这次新说的一段
 
     def show(self, status):
@@ -1328,7 +1338,7 @@ def main():
         pass
     instance_lock = acquire_single_instance()
     if instance_lock is None:
-        message_box("语音输入已经在运行中了。\n\n看屏幕右下角托盘里的麦克风图标（可能在 ^ 折叠区里），右键可以退出。")
+        message_box(f"{APP_NAME}已经在运行中了。\n\n看屏幕右下角托盘里的麦克风图标（可能在 ^ 折叠区里），右键可以退出。")
         return
     try:
         cfg = load_config()
