@@ -24,7 +24,17 @@ Transcription costs nothing and your audio never leaves your computer. Optionall
 
 ## Installation
 
-Requires **Windows 10/11** and **Python 3.10+**. An NVIDIA GPU (CUDA 12) makes it much faster, but the CPU works too.
+### Download (recommended)
+
+1. Get `LocalASRInput-v*-win64.zip` from [Releases](https://github.com/larntin/local-asr-input/releases) and unzip it anywhere.
+2. Run `LocalASRInput.exe`. A microphone icon appears in the system tray; `config.json` and the log are created next to the exe.
+3. The first run downloads the Whisper model (`large-v3-turbo`, about 1.6 GB) from Hugging Face. If that is slow or blocked, run `setx HF_ENDPOINT https://hf-mirror.com` once and start the app again, or switch to a cloud speech engine in ⚙ Settings.
+
+**GPU**: with an NVIDIA card and the CUDA 12 runtime (cuBLAS) installed, recognition runs on the GPU; otherwise it falls back to the CPU automatically, which works but is slower. On PCs without a GPU, the cloud speech engine is the fastest option.
+
+### From source
+
+Requires **Windows 10/11** and **Python 3.10+**.
 
 ```bash
 git clone https://github.com/larntin/local-asr-input.git
@@ -34,7 +44,6 @@ pip install -r requirements.txt
 
 Start it by double-clicking `start.bat` (runs in the background; look for the microphone icon in the system tray), or with `python local_asr_input.py` (with a console, handy for watching the log).
 
-The first run downloads the Whisper model from Hugging Face (`large-v3-turbo`, about 1.6 GB).
 
 ## Usage
 
@@ -116,7 +125,9 @@ All settings live in `config.json` next to the program (created on first run, wi
 ## Development
 
 ```bash
-python tests/run_all.py
+python tests/run_all.py     # tests
+pip install pyinstaller
+python build.py             # builds dist/LocalASRInput-v<version>-win64.zip
 ```
 
 The tests briefly open windows but never send real keystrokes. `test_llm` / `test_auto_llm` / `test_protocol` make real LLM calls and need the environment variables `OPENAI_COMPAT_BASE_URL` and `BAILIAN_API_KEY` (Alibaba Bailian); they are skipped when those aren't set.
@@ -126,7 +137,7 @@ To add a language, add a translation for every entry in `STRINGS` and `CONFIG_HE
 ## Roadmap
 
 - [x] Cloud speech recognition (URL + key), for PCs without a GPU
-- [ ] A packaged `.exe`: download and run, no Python needed
+- [x] A packaged `.exe`: download and run, no Python needed
 - [x] Gitee mirror: https://gitee.com/larntin/local-asr-input
 
 ## License

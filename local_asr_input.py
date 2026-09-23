@@ -46,7 +46,10 @@ from PIL import Image, ImageDraw, ImageTk
 
 from i18n import CONFIG_HELP, EN_DEFAULTS, UI_LANGUAGES, current_language, set_ui_language, system_language, t
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+__version__ = "0.1.0"
+FROZEN = getattr(sys, "frozen", False)  # PyInstaller 打包后的 exe
+# 配置和日志放在程序旁边：exe 版是 exe 所在目录，源码版是 .py 所在目录
+APP_DIR = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
 LOG_FILE = os.path.join(APP_DIR, "local_asr_input.log")
 CONFIG_FILE = os.environ.get("LOCAL_ASR_INPUT_CONFIG") or os.path.join(APP_DIR, "config.json")
 SAMPLE_RATE = 16000
@@ -1518,7 +1521,8 @@ def main():
     app = App(cfg)
     app.run()
     if app.restart:
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--after", str(os.getpid())], cwd=APP_DIR)
+        argv = [sys.executable] if FROZEN else [sys.executable, os.path.abspath(__file__)]
+        subprocess.Popen(argv + ["--after", str(os.getpid())], cwd=APP_DIR)
 
 
 if __name__ == "__main__":

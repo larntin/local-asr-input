@@ -25,7 +25,17 @@
 
 ## 安装
 
-需要 **Windows 10/11**、**Python 3.10+**。有 NVIDIA 显卡（CUDA 12）会快很多，没有也能用 CPU 跑。
+### 直接下载（推荐）
+
+1. 到 [Releases](https://github.com/larntin/local-asr-input/releases) 下载 `LocalASRInput-v*-win64.zip`，解压到任意位置。
+2. 运行 `LocalASRInput.exe`，右下角托盘出现麦克风图标；`config.json` 和日志生成在 exe 旁边。
+3. 第一次运行会从 HuggingFace 下载 Whisper 模型（`large-v3-turbo` 约 1.6GB）。国内下载慢或下载不动时，先执行一次 `setx HF_ENDPOINT https://hf-mirror.com` 再重新启动；或者在 ⚙ 设置里改用云端识别。
+
+**显卡**：有 NVIDIA 显卡、并装了 CUDA 12 运行库（cuBLAS）时自动用显卡识别；没有就自动改用 CPU，能用但慢一些。没有显卡的电脑推荐用云端识别。
+
+### 从源码运行
+
+需要 **Windows 10/11**、**Python 3.10+**。
 
 ```bash
 git clone https://github.com/larntin/local-asr-input.git
@@ -37,11 +47,6 @@ pip install -r requirements.txt
 
 启动：双击 `start.bat`（后台运行，看右下角托盘的麦克风图标），或者 `python local_asr_input.py`（带控制台，方便看日志）。
 
-第一次运行会从 HuggingFace 下载 Whisper 模型（`large-v3-turbo` 约 1.6GB）。国内网络下载不动时，可以设置镜像后再启动：
-
-```bash
-set HF_ENDPOINT=https://hf-mirror.com
-```
 
 ## 使用
 
@@ -121,7 +126,9 @@ set HF_ENDPOINT=https://hf-mirror.com
 ## 开发
 
 ```bash
-python tests/run_all.py
+python tests/run_all.py     # 测试
+pip install pyinstaller
+python build.py             # 打包成 dist/LocalASRInput-v<版本>-win64.zip
 ```
 
 测试会短暂弹出窗口，但不会模拟真实按键。`test_llm` / `test_auto_llm` / `test_protocol` 会真实调用 LLM，需要环境变量 `OPENAI_COMPAT_BASE_URL` 和 `BAILIAN_API_KEY`，没有时自动跳过。
@@ -129,7 +136,7 @@ python tests/run_all.py
 ## 计划
 
 - [x] 云端语音识别（填 URL + Key），没有显卡的电脑也能用
-- [ ] 打包成 exe，下载即用，不用装 Python
+- [x] 打包成 exe，下载即用，不用装 Python
 - [x] Gitee 镜像：https://gitee.com/larntin/local-asr-input
 
 ## 许可证
