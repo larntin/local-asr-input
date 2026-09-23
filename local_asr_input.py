@@ -41,7 +41,8 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 from PIL import Image, ImageDraw, ImageTk
 
-APP_NAME = "本声"
+from i18n import CONFIG_HELP, EN_DEFAULTS, UI_LANGUAGES, current_language, set_ui_language, system_language, t
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(APP_DIR, "local_asr_input.log")
 CONFIG_FILE = os.environ.get("LOCAL_ASR_INPUT_CONFIG") or os.path.join(APP_DIR, "config.json")
@@ -64,6 +65,8 @@ logging.getLogger("faster_whisper").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # 每次调 LLM 的请求行太啰嗦
 # 后台线程里没被捕获的异常也记到日志
 threading.excepthook = lambda a: log.error(f"[线程异常] {a.thread.name}", exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
+
+set_ui_language("auto")  # 读到配置后 main() 会按 ui_language 再设一次
 
 # ---------------- Win32 ----------------
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -147,7 +150,7 @@ def focus_window(hwnd):
 
 
 def message_box(text):
-    user32.MessageBoxW(None, text, APP_NAME, 0x40 | 0x40000)  # 信息图标 + 置顶
+    user32.MessageBoxW(None, text, t("app_name"), 0x40 | 0x40000)  # 信息图标 + 置顶
 
 
 def acquire_single_instance():
@@ -185,7 +188,7 @@ def parse_key(spec):
     """"Ctrl+Alt+F9" -> (mods, vk, tk_sequence)；tk_sequence 为 None 表示不能用在弹窗里（含 Win 键）。"""
     parts = [p.strip().lower() for p in str(spec).split("+") if p.strip()]
     if not parts or parts[-1] not in KEYS or any(m not in MODIFIERS for m in parts[:-1]):
-        raise ValueError(f"无法识别的按键：{spec!r}")
+        raise ValueError(t("err_key_unknown", spec=repr(spec)))
     mods, tk_mods = 0, []
     for m in parts[:-1]:
         mods |= MODIFIERS[m][0]
@@ -228,26 +231,6 @@ def normalize_punctuation(text):
 
 # ---------------- 配置 ----------------
 DEFAULT_CONFIG = {
-    "_说明": {
-        "hotkeys.start_record": "全局热键：开始录音（弹窗打开时再按 = 接着说，结果插到光标处）",
-        "hotkeys.stop_record": "全局热键：结束录音并识别；和 start_record 填同一个键就是来回切换",
-        "hotkeys.quit": "全局热键：退出程序",
-        "hotkeys.commit": "弹窗内：上屏（复制到剪贴板 + 粘贴到原窗口，不回车）",
-        "hotkeys.cancel": "弹窗内：取消",
-        "hotkeys.newline": "弹窗内：换行",
-        "hotkeys.llm": "弹窗内：用 LLM 优化提示词（开发中，也可以点右下角 ✦）",
-        "font_size": "输入框文字大小（磅）",
-        "llm": "✦ 优化提示词用的大模型。protocol 选 openai / anthropic，两种协议各存一套 base_url / api_key_env / model；"
-               "base_url 可以直接写 URL，也可以写环境变量名；key 只写环境变量名，不写在这里；system_prompt 是整理规则",
-        "normalize_punctuation": "true：把 ﹐﹑ 等小号标点、挨着中文的英文标点整理成正常中文标点",
-        "auto_llm": "true：识别完成后自动用 LLM 优化新说的这一段（太短的不优化）",
-        "log_level": "info = 详细（会记录识别出的文字）；error = 只记错误和警告。日志只保留最近 7 天",
-        "按键写法": "修饰键 Ctrl / Alt / Shift / Win（Win 只能用于全局热键）+ 一个键，用 + 连接，如 Ctrl+Alt+F9。"
-                  "可用的键：F1~F24、A~Z、0~9、Enter、Esc、Space、Tab、Backspace、Insert、Delete、Home、End、"
-                  "PageUp、PageDown、Pause、ScrollLock",
-        "model": "faster-whisper 模型名：large-v3-turbo（默认，快且中文准）/ medium 等，本机没有时首次会自动下载",
-        "生效": "改完后在托盘图标右键点「重启」生效",
-    },
     "hotkeys": {
         "start_record": "F9",
         "stop_record": "F9",
@@ -257,6 +240,7 @@ DEFAULT_CONFIG = {
         "newline": "Shift+Enter",
         "llm": "Ctrl+L",
     },
+    "ui_language": "auto",
     "font_size": 15,
     "normalize_punctuation": True,
     "auto_llm": True,
@@ -287,22 +271,31 @@ POPUP_KEYS = ("commit", "cancel", "newline", "llm")
 
 def load_config():
     """读取 config.json（不存在就生成默认的），缺的项用默认值补齐，并校验所有快捷键。"""
+    defaults = default_config()
     if not os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
+        save_config(defaults)
         log.info(f"[配置] 已生成默认配置 {CONFIG_FILE}")
     with open(CONFIG_FILE, encoding="utf-8-sig") as f:
-        user = json.load(f)
-    cfg = {**DEFAULT_CONFIG, **user,
-           "hotkeys": {**DEFAULT_CONFIG["hotkeys"], **user.get("hotkeys", {})},
-           "llm": merge_llm(user.get("llm", {}))}
+        user = {k: v for k, v in json.load(f).items() if not k.startswith("_")}  # _说明 / _help 只给人看
+    cfg = {**defaults, **user,
+           "hotkeys": {**defaults["hotkeys"], **user.get("hotkeys", {})},
+           "llm": merge_llm(user.get("llm", {}), defaults["llm"])}
     validate_config(cfg)
     return cfg
 
 
-def merge_llm(user_llm):
+def default_config():
+    """默认配置：中文系统用中文识别和整理规则，其他系统用英文。"""
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+    if system_language() != "zh":
+        cfg["language"], cfg["initial_prompt"] = EN_DEFAULTS["language"], EN_DEFAULTS["initial_prompt"]
+        cfg["llm"]["system_prompt"] = EN_DEFAULTS["system_prompt"]
+    return cfg
+
+
+def merge_llm(user_llm, d=None):
     """llm 配置补齐默认值；旧版平铺的 base_url_env / api_key_env / model 迁移到 openai 那一套里。"""
-    d, u = DEFAULT_CONFIG["llm"], dict(user_llm)
+    d, u = d or DEFAULT_CONFIG["llm"], dict(user_llm)
     legacy = {}
     if "base_url_env" in u:
         legacy["base_url"] = u.pop("base_url_env")
@@ -322,28 +315,30 @@ def validate_config(cfg):
         try:
             mods, vk, tk_seq = parse_key(cfg["hotkeys"][name])
         except ValueError as e:
-            raise ValueError(f"hotkeys.{name}：{e}") from None
+            raise ValueError(t("err_field", name=f"hotkeys.{name}", err=e)) from None
         if name in POPUP_KEYS and tk_seq is None:
-            raise ValueError(f"hotkeys.{name}：Win 键只能用于全局热键")
+            raise ValueError(t("err_win_global", name=f"hotkeys.{name}"))
         parsed[name] = (mods, vk)
     # 同一组里不能撞键（开始 / 结束录音允许相同 = 来回切换）
     for group in (("start_record", "quit"), ("stop_record", "quit"), POPUP_KEYS):
         seen = {}
         for name in group:
             if parsed[name] in seen:
-                raise ValueError(f"hotkeys.{name} 和 hotkeys.{seen[parsed[name]]} 用了同一个键")
+                raise ValueError(t("err_key_conflict", a=f"hotkeys.{name}", b=f"hotkeys.{seen[parsed[name]]}"))
             seen[parsed[name]] = name
     if not (isinstance(cfg["font_size"], int) and 8 <= cfg["font_size"] <= 40):
-        raise ValueError("font_size 要是 8~40 之间的整数")
+        raise ValueError(t("err_font"))
     llm = cfg["llm"]
     if llm["protocol"] not in LLM_PROTOCOLS:
-        raise ValueError(f"llm.protocol 只能是 {' / '.join(LLM_PROTOCOLS)}")
+        raise ValueError(t("err_protocol", opts=" / ".join(LLM_PROTOCOLS)))
     if not llm[llm["protocol"]]["model"].strip():
-        raise ValueError("llm.model 不能为空")
+        raise ValueError(t("err_llm_model"))
     if cfg["log_level"] not in LOG_LEVELS:
-        raise ValueError(f"log_level 只能是 {' / '.join(LOG_LEVELS)}")
+        raise ValueError(t("err_log_level", opts=" / ".join(LOG_LEVELS)))
+    if cfg["ui_language"] not in UI_LANGUAGES:
+        raise ValueError(t("err_ui_language", opts=" / ".join(UI_LANGUAGES)))
     if not (isinstance(cfg["llm"]["timeout"], int) and 1 <= cfg["llm"]["timeout"] <= 300):
-        raise ValueError("llm.timeout 要是 1~300 之间的整数（秒）")
+        raise ValueError(t("err_timeout"))
 
 
 LOG_LEVELS = {"info": logging.INFO, "error": logging.WARNING}  # error 档也保留警告，出问题时更好查
@@ -377,9 +372,9 @@ def llm_complete(llm, system, text, max_tokens=2048):
     base_url = resolve_base_url(prof["base_url"])
     api_key = os.environ.get(prof["api_key_env"].strip(), "").strip()
     if not base_url:
-        raise RuntimeError(f"接口地址 {prof['base_url']!r} 既不是 URL，也不是已设置的环境变量")
+        raise RuntimeError(t("err_url", url=repr(prof["base_url"])))
     if not api_key:
-        raise RuntimeError(f"环境变量 {prof['api_key_env']} 没有设置")
+        raise RuntimeError(t("err_key_env", env=prof["api_key_env"]))
     if proto == "openai":
         from openai import OpenAI  # 用到时才导入，不拖慢启动
         client = OpenAI(base_url=base_url, api_key=api_key, timeout=llm["timeout"])
@@ -408,10 +403,11 @@ def apply_log_level(level):
 
 
 def save_config(cfg):
-    order = ["_说明", "hotkeys", "font_size", "normalize_punctuation", "auto_llm", "log_level",
+    order = ["hotkeys", "ui_language", "font_size", "normalize_punctuation", "auto_llm", "log_level",
              "model", "language", "initial_prompt", "llm"]
-    data = {k: cfg[k] for k in order if k in cfg} | {k: v for k, v in cfg.items() if k not in order}
-    data["_说明"] = DEFAULT_CONFIG["_说明"]
+    lang = current_language()
+    data = {"_说明" if lang == "zh" else "_help": CONFIG_HELP[lang]}
+    data |= {k: cfg[k] for k in order if k in cfg} | {k: v for k, v in cfg.items() if k not in order and not k.startswith("_")}
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -427,7 +423,7 @@ def hotkey_loop(events, hotkeys):
     for hid, (action, spec) in enumerate(regs, 1):
         mods, vk, _ = parse_key(spec)
         if not user32.RegisterHotKey(None, hid, mods | MOD_NOREPEAT, vk):
-            events.put(("fatal", f"热键 {spec} 注册失败，可能被其他软件占用了。\n请在 {CONFIG_FILE} 里换一个键。"))
+            events.put(("fatal", t("hotkey_failed", spec=spec, path=CONFIG_FILE)))
             return
     log.info("[热键] 已注册：" + "，".join(f"{a}={s}" for a, s in regs))
     msg = wintypes.MSG()
@@ -524,12 +520,11 @@ def load_model(name, language):
 class SettingsDialog:
     """⚙ 所有配置集中在这里；保存时校验、写 config.json，然后重启生效。"""
 
-    HOTKEY_FIELDS = [("start_record", "开始录音（全局）"), ("stop_record", "结束录音（全局）"), ("quit", "退出程序（全局）"),
-                     ("commit", "上屏"), ("cancel", "取消"), ("newline", "换行"), ("llm", "LLM 优化")]
+    HOTKEY_NAMES = ("start_record", "stop_record", "quit", "commit", "cancel", "newline", "llm")
     WHISPER_MODELS = ["large-v3-turbo", "medium", "small", "large-v3"]
     LANGUAGES = ["zh", "en", "ja", "ko"]
     LLM_MODELS = ["deepseek-v4-flash", "qwen3-max", "qwen-plus", "qwen-flash"]
-    LOG_LEVEL_NAMES = {"info": "详细（会记录识别出的文字）", "error": "仅错误和警告"}
+
 
     def __init__(self, app):
         self.app = app
@@ -537,10 +532,15 @@ class SettingsDialog:
         cfg, c = app.cfg, COLORS
         self.scale = scale = app.root.winfo_fpixels("1i") / 96
         px = lambda v: round(v * scale)
+        zh = current_language() == "zh"
+        self.label_width = px(110 if zh else 160)  # 英文标签更长
+        width = px(600 if zh else 660)
+        self.log_level_names = {"info": t("log_info"), "error": t("log_error")}
+        self.ui_lang_names = {k: (t("lang_auto") if v is None else v) for k, v in UI_LANGUAGES.items()}
 
         w = self.win = tk.Toplevel(app.root)
         w.withdraw()
-        w.title(f"{APP_NAME} · 设置")
+        w.title(t("settings_title", app=t("app_name")))
         w.configure(bg=c["bg"])
         w.attributes("-topmost", True)
         w.resizable(False, False)
@@ -569,9 +569,9 @@ class SettingsDialog:
         self.tab_list = []  # [(标题, 内容 Frame, 文字 Label, 下划线 Frame)]
 
         llm = cfg["llm"]
-        self.tab_llm = self._tab("✦ LLM")
-        saved_url = resolve_base_url(llm[llm["protocol"]]["base_url"]) or "（地址无效）"
-        cur = tk.Label(self.body, text=f"当前生效：{describe_llm(llm)}\n{saved_url}", bg=c["bg"], fg=c["llm_fg"],
+        self.tab_llm = self._tab(t("tab_llm"))
+        saved_url = resolve_base_url(llm[llm["protocol"]]["base_url"]) or t("addr_invalid")
+        cur = tk.Label(self.body, text=t("current", desc=describe_llm(llm), url=saved_url), bg=c["bg"], fg=c["llm_fg"],
                        font=(UI_FONT, 9), anchor="w", justify="left")
         cur.grid(row=self.row, column=0, columnspan=2, sticky="w", pady=(0, px(10)))
         self.row += 1
@@ -585,44 +585,44 @@ class SettingsDialog:
             b.pack(side="left")
             b.bind("<Button-1>", lambda e, proto=proto: self._select_proto(proto))
             self.proto_btns[proto] = b
-        self._row("协议", seg, sticky="w")
+        self._row(t("protocol"), seg, sticky="w")
 
         self.proto_vars, self.proto_frames = {}, {}
         outer_body, outer_row = self.body, self.row
         for proto in LLM_PROTOCOLS:
             f = tk.Frame(outer_body, bg=c["bg"])
-            f.columnconfigure(0, minsize=px(110))
+            f.columnconfigure(0, minsize=self.label_width)
             f.columnconfigure(1, weight=1)
             f.grid(row=outer_row, column=0, columnspan=2, sticky="we")
             self.body, self.row = f, 0
             v = {k: tk.StringVar(value=llm[proto][k]) for k in ("model", "base_url", "api_key_env")}
-            self._row("模型", self._combo(v["model"], self.LLM_MODELS))
-            self._row("接口地址", self._url_entry(v["base_url"]))
-            self._row("API Key 变量", self._env_entry(v["api_key_env"]))
+            self._row(t("model"), self._combo(v["model"], self.LLM_MODELS))
+            self._row(t("api_url"), self._url_entry(v["base_url"]))
+            self._row(t("api_key_env"), self._env_entry(v["api_key_env"]))
             for var in v.values():  # 改了配置，上次的测试结果就不作数了
                 var.trace_add("write", lambda *_: hasattr(self, "test_label") and self.test_label.config(text=""))
             self.proto_vars[proto], self.proto_frames[proto] = v, f
         self.body, self.row = outer_body, outer_row + 1
 
         test = tk.Frame(self.body, bg=c["bg"])
-        self._button(test, "测试连接", self._test_llm).pack(side="left")
+        self._button(test, t("test_conn"), self._test_llm).pack(side="left")
         self.test_label = tk.Label(test, text="", bg=c["bg"], fg=c["muted"], font=(UI_FONT, 9), anchor="w",
                                    justify="left", wraplength=px(330))
         self.test_label.pack(side="left", padx=(px(10), 0))
         self._row("", test, sticky="w")
         self._select_proto(llm["protocol"])
         self.timeout_var = tk.StringVar(value=str(llm["timeout"]))
-        self._row("超时（秒）", tk.Spinbox(self.body, from_=1, to=300, textvariable=self.timeout_var, width=6,
+        self._row(t("timeout"), tk.Spinbox(self.body, from_=1, to=300, textvariable=self.timeout_var, width=6,
                                         buttonbackground=c["bar"], **self.entry_style), sticky="w")
         self.system_text = tk.Text(self.body, height=7, width=1, wrap="char", undo=True, padx=px(6), pady=px(4),
                                    **self.entry_style)
         self.system_text.insert("1.0", llm["system_prompt"])
-        self._row("整理规则", self.system_text, top=True)
+        self._row(t("system_prompt"), self.system_text, top=True)
 
-        self.tab_keys = self._tab("快捷键")
-        self._hint("点一下输入框，直接按下想要的组合键")
+        self.tab_keys = self._tab(t("tab_keys"))
+        self._hint(t("hint_keys"))
         self.hotkey_vars, self.entry_vars = {}, {}
-        for name, label in self.HOTKEY_FIELDS:
+        for name in self.HOTKEY_NAMES:
             var = tk.StringVar(value=cfg["hotkeys"][name])
             e = tk.Entry(self.body, textvariable=var, state="readonly", readonlybackground=c["bar"], cursor="hand2",
                          **{k: v for k, v in self.entry_style.items() if k != "bg"})
@@ -630,45 +630,49 @@ class SettingsDialog:
             e.bind("<FocusOut>", lambda ev: self._capture_stop())
             e.bind("<KeyPress>", lambda ev, var=var: self._capture_key(ev, var))
             e.bind("<Button-1>", lambda ev, e=e: e.focus_set())
-            self._row(label, e)
+            self._row(t("hk_" + name), e)
             self.hotkey_vars[name] = self.entry_vars[e] = var
 
-        self.tab_general = self._tab("常规")
-        self._section("显示")
-        self.font_var = tk.StringVar(value=str(cfg["font_size"]))
-        self._row("输入框字号", tk.Spinbox(self.body, from_=8, to=40, textvariable=self.font_var, width=6,
-                                        buttonbackground=c["bar"], **self.entry_style), sticky="w")
-        self._section("识别")
-        self.model_var = tk.StringVar(value=cfg["model"])
-        self._row("Whisper 模型", self._combo(self.model_var, self.WHISPER_MODELS))
-        self.lang_var = tk.StringVar(value=cfg["language"])
-        self._row("语言", self._combo(self.lang_var, self.LANGUAGES, width=8), sticky="w")
-        self.prompt_var = tk.StringVar(value=cfg["initial_prompt"])
-        self._row("识别提示词", tk.Entry(self.body, textvariable=self.prompt_var, **self.entry_style))
-        self.punct_var = tk.BooleanVar(value=cfg["normalize_punctuation"])
-        self._row("", self._check("自动整理标点（﹐﹑ → ，、；挨着中文的英文标点转全角）", self.punct_var))
-        self.auto_llm_var = tk.BooleanVar(value=cfg["auto_llm"])
-        self._row("", self._check("识别完成后自动用 ✦ LLM 优化（只优化新说的一段）", self.auto_llm_var))
-        self._section("日志", "只保留最近 7 天")
-        self.log_level_var = tk.StringVar(value=self.LOG_LEVEL_NAMES[cfg["log_level"]])
-        cb = self._combo(self.log_level_var, list(self.LOG_LEVEL_NAMES.values()))
+        self.tab_general = self._tab(t("tab_general"))
+        self._section(t("sec_display"))
+        self.ui_lang_var = tk.StringVar(value=self.ui_lang_names[cfg["ui_language"]])
+        cb = self._combo(self.ui_lang_var, list(self.ui_lang_names.values()), width=14)
         cb.configure(state="readonly")
-        self._row("日志级别", cb)
+        self._row(t("ui_lang"), cb, sticky="w")
+        self.font_var = tk.StringVar(value=str(cfg["font_size"]))
+        self._row(t("font_size"), tk.Spinbox(self.body, from_=8, to=40, textvariable=self.font_var, width=6,
+                                        buttonbackground=c["bar"], **self.entry_style), sticky="w")
+        self._section(t("sec_asr"))
+        self.model_var = tk.StringVar(value=cfg["model"])
+        self._row(t("whisper_model"), self._combo(self.model_var, self.WHISPER_MODELS))
+        self.lang_var = tk.StringVar(value=cfg["language"])
+        self._row(t("asr_lang"), self._combo(self.lang_var, self.LANGUAGES, width=8), sticky="w")
+        self.prompt_var = tk.StringVar(value=cfg["initial_prompt"])
+        self._row(t("asr_prompt"), tk.Entry(self.body, textvariable=self.prompt_var, **self.entry_style))
+        self.punct_var = tk.BooleanVar(value=cfg["normalize_punctuation"])
+        self._row("", self._check(t("chk_punct"), self.punct_var))
+        self.auto_llm_var = tk.BooleanVar(value=cfg["auto_llm"])
+        self._row("", self._check(t("chk_auto_llm"), self.auto_llm_var))
+        self._section(t("sec_log"), t("hint_log"))
+        self.log_level_var = tk.StringVar(value=self.log_level_names[cfg["log_level"]])
+        cb = self._combo(self.log_level_var, list(self.log_level_names.values()))
+        cb.configure(state="readonly")
+        self._row(t("log_level"), cb)
 
         foot = tk.Frame(w, bg=c["bar"], padx=px(22), pady=px(10))
         foot.pack(fill="x")
         self.error = tk.Label(foot, text="", bg=c["bar"], fg=ACCENTS["recording"], font=(UI_FONT, 10),
                               anchor="w", justify="left", wraplength=px(330))
         self.error.pack(side="left", fill="x", expand=True)
-        self._button(foot, "保存并重启", self.save, primary=True).pack(side="right")
-        self._button(foot, "取消", self.close).pack(side="right", padx=px(8))
+        self._button(foot, t("save"), self.save, primary=True).pack(side="right")
+        self._button(foot, t("cancel"), self.close).pack(side="right", padx=px(8))
 
         w.update_idletasks()
-        self.content.config(width=px(600), height=max(f.winfo_reqheight() for _, f, _, _ in self.tab_list))
+        self.content.config(width=width, height=max(f.winfo_reqheight() for _, f, _, _ in self.tab_list))
         self.content.pack_propagate(False)
         self.select_tab(self.tab_list[0][1])
         w.update_idletasks()
-        ww, wh = px(600), w.winfo_reqheight()
+        ww, wh = width, w.winfo_reqheight()
         w.geometry(f"{ww}x{wh}+{(w.winfo_screenwidth() - ww) // 2}+{max(0, (w.winfo_screenheight() - wh) // 2)}")
         w.deiconify()
         try:  # Win11 深色标题栏
@@ -685,7 +689,7 @@ class SettingsDialog:
         px = lambda v: round(v * self.scale)
         c = COLORS
         f = tk.Frame(self.content, bg=c["bg"], padx=px(22), pady=px(16))
-        f.columnconfigure(0, minsize=px(110))  # 各页签标签列同宽，切换时输入框不左右错位
+        f.columnconfigure(0, minsize=self.label_width)  # 各页签标签列同宽，切换时输入框不左右错位
         f.columnconfigure(1, weight=1)
         item = tk.Frame(self.tab_bar, bg=c["bar"], cursor="hand2")
         item.pack(side="left", padx=(0, px(4)), pady=(px(8), 0))
@@ -765,7 +769,7 @@ class SettingsDialog:
 
         def refresh(*_):
             url = resolve_base_url(var.get())
-            shown.config(text=f"→ {url}" if url else "✗ 不是 URL，也不是已设置的环境变量",
+            shown.config(text=f"→ {url}" if url else t("url_bad"),
                          fg=c["muted"] if url else ACCENTS["recording"])
         var.trace_add("write", refresh)
         refresh()
@@ -787,14 +791,14 @@ class SettingsDialog:
     def _test_llm(self):
         """用当前填的配置发一条很短的请求，看通不通。"""
         llm = self._collect_llm()
-        self.test_label.config(text=f"测试中…（{describe_llm(llm)}）", fg=COLORS["muted"])
+        self.test_label.config(text=t("testing", desc=describe_llm(llm)), fg=COLORS["muted"])
         box = {}
 
         def work():
-            t = time.time()
+            t0 = time.time()
             try:
-                reply = llm_complete(llm, "只回复 OK 两个字母。", "ping", max_tokens=16)
-                box["ok"] = f"✓ 连接成功，{time.time() - t:.1f}s，回复：{reply[:20]}"
+                reply = llm_complete(llm, "Reply with just: OK", "ping", max_tokens=16)
+                box["ok"] = t("test_ok", sec=time.time() - t0, reply=reply[:20])
             except Exception as e:
                 box["err"] = f"✗ {str(e)[:160]}"
 
@@ -820,7 +824,7 @@ class SettingsDialog:
 
         def refresh(*_):
             ok = bool(os.environ.get(var.get().strip()))
-            status.config(text="✓ 已设置" if ok else "✗ 未设置", fg=ACCENTS["idle"] if ok else ACCENTS["recording"])
+            status.config(text=t("env_set") if ok else t("env_unset"), fg=ACCENTS["idle"] if ok else ACCENTS["recording"])
         var.trace_add("write", refresh)
         refresh()
         return f
@@ -882,26 +886,28 @@ class SettingsDialog:
             new["font_size"] = int(self.font_var.get())
             new["llm"]["timeout"] = int(self.timeout_var.get())
         except ValueError:
-            self.error.config(text="字号和超时要填整数")
+            self.error.config(text=t("err_int"))
             return
         new["model"] = self.model_var.get().strip()
         new["language"] = self.lang_var.get().strip()
         new["initial_prompt"] = self.prompt_var.get().strip()
         new["normalize_punctuation"] = bool(self.punct_var.get())
         new["auto_llm"] = bool(self.auto_llm_var.get())
-        new["log_level"] = {v: k for k, v in self.LOG_LEVEL_NAMES.items()}[self.log_level_var.get()]
+        new["log_level"] = {v: k for k, v in self.log_level_names.items()}[self.log_level_var.get()]
+        new["ui_language"] = {v: k for k, v in self.ui_lang_names.items()}[self.ui_lang_var.get()]
         new["llm"] = self._collect_llm()
         if not new["model"]:
-            self.error.config(text="模型名不能为空")
+            self.error.config(text=t("err_model_empty"))
             return
         try:
             validate_config(new)
         except ValueError as e:
             msg = str(e)
-            for name, label in self.HOTKEY_FIELDS:  # 内部名字换成界面上的叫法
-                msg = msg.replace(f"hotkeys.{name}", f"「{label}」")
-            self.error.config(text=msg.replace("llm.timeout", "「超时」").replace("llm.model", "「LLM 模型」")
-                              .replace("font_size", "「输入框字号」"))
+            q = lambda key: t("field_quote", label=t(key))  # 内部名字换成界面上的叫法
+            for name in self.HOTKEY_NAMES:
+                msg = msg.replace(f"hotkeys.{name}", q("hk_" + name))
+            self.error.config(text=msg.replace("llm.timeout", q("timeout")).replace("llm.model", q("model"))
+                              .replace("font_size", q("font_size")))
             tab = self.tab_keys if "hotkeys." in str(e) else self.tab_llm if "llm." in str(e) else self.tab_general
             self.select_tab(tab)
             return
@@ -927,7 +933,7 @@ class App:
         self.settings = None  # 打开着的设置对话框
 
         self.root = tk.Tk()
-        self.root.title(APP_NAME)
+        self.root.title(t("app_name"))
         # Tk 回调里的异常默认只打到 stderr（pythonw 下直接丢失），改为记日志
         self.root.report_callback_exception = lambda *exc: log.error("[界面异常]", exc_info=exc)
         self.root.attributes("-topmost", True)
@@ -936,14 +942,14 @@ class App:
         self.root.withdraw()
 
         self.tray = pystray.Icon(
-            "local_asr_input", make_icon(TRAY_COLORS["loading"]), f"{APP_NAME}：" + self._tray_text(),
+            "local_asr_input", make_icon(TRAY_COLORS["loading"]), f"{t('app_name')}: " + self._tray_text(),
             menu=pystray.Menu(
-                pystray.MenuItem(lambda item: "状态：" + self._tray_text(), None, enabled=False),
-                pystray.MenuItem(lambda item: "LLM：" + describe_llm(self.cfg["llm"]), None, enabled=False),
-                pystray.MenuItem("设置", lambda: self.events.put(("settings", None))),
-                pystray.MenuItem("重启（重新读取配置）", lambda: self.events.put(("restart", None))),
-                pystray.MenuItem("打开日志", lambda: os.startfile(LOG_FILE)),
-                pystray.MenuItem("退出", lambda: self.events.put(("quit", None))),
+                pystray.MenuItem(lambda item: t("tray_status", s=self._tray_text()), None, enabled=False),
+                pystray.MenuItem(lambda item: t("tray_llm", s=describe_llm(self.cfg["llm"])), None, enabled=False),
+                pystray.MenuItem(t("menu_settings"), lambda: self.events.put(("settings", None))),
+                pystray.MenuItem(t("menu_restart"), lambda: self.events.put(("restart", None))),
+                pystray.MenuItem(t("menu_log"), lambda: os.startfile(LOG_FILE)),
+                pystray.MenuItem(t("menu_quit"), lambda: self.events.put(("quit", None))),
             ),
         )
         threading.Thread(target=self.tray.run, name="tray", daemon=True).start()
@@ -1039,7 +1045,7 @@ class App:
         w, h = int(m["width"]), int(m["height"])
         n, gap = 5, max(2, w // 20)
         bw = (w - gap * (n - 1)) / n
-        t = time.time()
+        t0 = time.time()
         if self.state == "recording":
             level = min(1.0, self.recorder.level * 12)
             for i in range(n):
@@ -1087,10 +1093,10 @@ class App:
 
     def _call_llm(self, seq, text):
         c = self.cfg["llm"]
-        t = time.time()
+        t0 = time.time()
         try:
             result = llm_complete(c, c["system_prompt"], text)
-            log.info(f"[LLM] 完成，用时 {time.time() - t:.1f}s：{result!r}")
+            log.info(f"[LLM] 完成，用时 {time.time() - t0:.1f}s：{result!r}")
             self.events.put(("llm_result", (seq, result)))
         except Exception as e:
             log.error(f"[LLM] 失败：{e}")
@@ -1122,14 +1128,14 @@ class App:
     def _load_model(self):
         name = self.cfg["model"]
         log.info(f"[模型] 加载 {name} ...")
-        t = time.time()
+        t0 = time.time()
         try:
             model, device = load_model(name, self.cfg["language"])
             self.events.put(("model", model))
-            log.info(f"[模型] 就绪：{device}，用时 {time.time() - t:.1f}s。按 {self.keys['start_record']} 开始说话。")
+            log.info(f"[模型] 就绪：{device}，用时 {time.time() - t0:.1f}s。按 {self.keys['start_record']} 开始说话。")
         except Exception as e:
             log.error(f"[模型] {e}")
-            self.events.put(("fatal", f"模型加载失败：{e}\n详见日志 {LOG_FILE}"))
+            self.events.put(("fatal", t("model_failed", err=e, path=LOG_FILE)))
 
     def _transcribe(self, audio):
         language = self.cfg["language"]
@@ -1179,15 +1185,14 @@ class App:
     def _tray_text(self):
         # 模型没好时，idle/editing 也显示为加载中
         if self.model is None:
-            return "模型加载中…"
-        return {"idle": f"就绪，按 {self.keys['start_record']} 说话", "editing": "编辑中",
-                "recording": "录音中", "transcribing": "识别中", "optimizing": "LLM 优化中"}[self.state]
+            return t("st_loading")
+        return t("st_" + self.state, key=self.keys["start_record"]) if self.state == "idle" else t("st_" + self.state)
 
     def _set_state(self, state):
         self.state = state
         self.accent.config(bg=ACCENTS["loading" if self.model is None else state])
         self.tray.icon = make_icon(TRAY_COLORS["loading" if self.model is None else state])
-        self.tray.title = f"{APP_NAME}：" + self._tray_text()
+        self.tray.title = f"{t('app_name')}: " + self._tray_text()
         self.tray.update_menu()
 
     def open_settings(self):
@@ -1338,16 +1343,17 @@ def main():
         pass
     instance_lock = acquire_single_instance()
     if instance_lock is None:
-        message_box(f"{APP_NAME}已经在运行中了。\n\n看屏幕右下角托盘里的麦克风图标（可能在 ^ 折叠区里），右键可以退出。")
+        message_box(t("already_running", app=t("app_name")))
         return
     try:
         cfg = load_config()
     except Exception as e:
         log.error(f"[配置] 出错：{e}")
-        message_box(f"配置文件有误：\n{e}\n\n文件：{CONFIG_FILE}")
+        message_box(t("config_error", err=e, path=CONFIG_FILE))
         subprocess.Popen(["notepad.exe", CONFIG_FILE])
         return
     apply_log_level(cfg["log_level"])
+    set_ui_language(cfg["ui_language"])
     app = App(cfg)
     app.run()
     if app.restart:
