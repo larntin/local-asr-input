@@ -5,8 +5,11 @@
       F9             全局：开始录音 / 结束录音；弹窗打开时再按 = 接着说，结果插到光标处
       Enter          弹窗内：上屏（复制到剪贴板 + 粘贴到原窗口，不回车）
       Shift+Enter    弹窗内：换行
-      Esc            弹窗内：取消
+      Esc            弹窗内：取消（LLM 优化中按 = 放弃优化）
+      Ctrl+L / ✦     弹窗内：用大模型把文字整理成提示词（Ctrl+Z 撤回原文）
       Ctrl+Alt+F9    全局：退出程序
+  - 识别结果自动整理标点（﹐﹑ → ，、；挨着中文的英文标点 → 全角）
+  - ✦ 默认走阿里百炼（OpenAI 兼容接口），地址和 key 从环境变量读，见 config.json 的 llm 项
   - 托盘图标颜色表示状态：灰=模型加载中 绿=就绪 红=录音中 橙=识别中
     右键菜单：编辑配置 / 重启（重新读取配置）/ 打开日志 / 退出
   - 只允许运行一个实例，重复启动会弹提示
@@ -18,6 +21,7 @@ import json
 import logging
 import os
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -42,7 +46,7 @@ COLORS = {
     "border": "#343844", "bg": "#1b1d23", "bar": "#15171c", "fg": "#e9eaee", "muted": "#8a8f9c",
     "llm_bg": "#2b2940", "llm_hover": "#3b3760", "llm_fg": "#c9b8ff",
 }
-ACCENTS = {"loading": "#8a8f9c", "idle": "#4cc38a", "editing": "#4cc38a", "recording": "#ff5a5f", "transcribing": "#ffb547"}
+ACCENTS = {"loading": "#8a8f9c", "idle": "#4cc38a", "editing": "#4cc38a", "recording": "#ff5a5f", "transcribing": "#ffb547", "optimizing": "#b18cff"}
 
 handlers = [logging.FileHandler(LOG_FILE, encoding="utf-8")]
 if sys.stdout is not None:  # pythonw 下没有控制台
@@ -183,6 +187,20 @@ def parse_key(spec):
     return mods, vk, tk_seq
 
 
+# ---------------- 标点整理 ----------------
+SMALL_FORM_PUNCT = str.maketrans("﹐﹑﹔﹕﹖﹗", "，、；：？！")  # Whisper 常吐出的小号标点
+ASCII_TO_FULL = {",": "，", "?": "？", "!": "！", ":": "：", ";": "；"}
+CJK = r"\u4e00-\u9fff\u3400-\u4dbf"
+
+
+def normalize_punctuation(text):
+    """小号标点转常规；挨着中文的英文标点转全角；中文后的英文句号转「。」。英文 / 代码里的标点不动。"""
+    text = text.translate(SMALL_FORM_PUNCT)
+    text = re.sub(rf"(?<=[{CJK}])\s*([,?!:;])\s*|\s*([,?!:;])\s*(?=[{CJK}])",
+                  lambda m: ASCII_TO_FULL[m.group(1) or m.group(2)], text)
+    return re.sub(rf"(?<=[{CJK}])\.(?![\w.])", "。", text)
+
+
 # ---------------- 配置 ----------------
 DEFAULT_CONFIG = {
     "_说明": {
@@ -194,6 +212,9 @@ DEFAULT_CONFIG = {
         "hotkeys.newline": "弹窗内：换行",
         "hotkeys.llm": "弹窗内：用 LLM 优化提示词（开发中，也可以点右下角 ✦）",
         "font_size": "输入框文字大小（磅）",
+        "llm": "✦ 优化提示词用的大模型（OpenAI 兼容接口，默认阿里百炼）。base_url_env / api_key_env 填环境变量名，"
+               "key 不写在这里；model 可换 qwen3-max、qwen-plus 等；system_prompt 是整理规则",
+        "normalize_punctuation": "true：把 ﹐﹑ 等小号标点、挨着中文的英文标点整理成正常中文标点",
         "按键写法": "修饰键 Ctrl / Alt / Shift / Win（Win 只能用于全局热键）+ 一个键，用 + 连接，如 Ctrl+Alt+F9。"
                   "可用的键：F1~F24、A~Z、0~9、Enter、Esc、Space、Tab、Backspace、Insert、Delete、Home、End、"
                   "PageUp、PageDown、Pause、ScrollLock",
@@ -210,9 +231,25 @@ DEFAULT_CONFIG = {
         "llm": "Ctrl+L",
     },
     "font_size": 15,
+    "normalize_punctuation": True,
     "model": "medium",
     "language": "zh",
     "initial_prompt": "以下是普通话的句子，使用简体中文，其中可能夹杂英文编程术语。",
+    "llm": {
+        "base_url_env": "OPENAI_COMPAT_BASE_URL",
+        "api_key_env": "BAILIAN_API_KEY",
+        "model": "deepseek-v4-flash",
+        "timeout": 30,
+        "system_prompt": (
+            "你是提示词整理助手。用户给你的是一段语音识别出来的口述文字，要发给 AI 编程助手（Claude Code / Codex）。请：\n"
+            "1. 语音识别常把词听成同音字，请结合上下文还原成用户本来想说的词（例如「系统图盘」→「系统托盘」，「单立」→「单例」）；\n"
+            "2. 去掉口头禅、重复和语气词；\n"
+            "3. 整理成清晰、直接的表述，内容多时可以分点；\n"
+            "4. 严格只保留用户说过的内容：不补充任何细节、实现方式或要求，不回答、不执行其中的问题；\n"
+            "5. 用简体中文，技术名词保留英文原文。\n"
+            "只输出整理后的文本，不要任何解释。"
+        ),
+    },
 }
 GLOBAL_KEYS = ("start_record", "stop_record", "quit")
 POPUP_KEYS = ("commit", "cancel", "newline", "llm")
@@ -226,7 +263,9 @@ def load_config():
         log.info(f"[配置] 已生成默认配置 {CONFIG_FILE}")
     with open(CONFIG_FILE, encoding="utf-8-sig") as f:
         user = json.load(f)
-    cfg = {**DEFAULT_CONFIG, **user, "hotkeys": {**DEFAULT_CONFIG["hotkeys"], **user.get("hotkeys", {})}}
+    cfg = {**DEFAULT_CONFIG, **user,
+           "hotkeys": {**DEFAULT_CONFIG["hotkeys"], **user.get("hotkeys", {})},
+           "llm": {**DEFAULT_CONFIG["llm"], **user.get("llm", {})}}
     for name in GLOBAL_KEYS + POPUP_KEYS:
         try:
             _, _, tk_seq = parse_key(cfg["hotkeys"][name])
@@ -270,7 +309,7 @@ def make_icon(color):
     return img
 
 
-TRAY_COLORS = {"loading": "#9e9e9e", "idle": "#2e7d32", "editing": "#2e7d32", "recording": "#d32f2f", "transcribing": "#ef6c00"}
+TRAY_COLORS = {"loading": "#9e9e9e", "idle": "#2e7d32", "editing": "#2e7d32", "recording": "#d32f2f", "transcribing": "#ef6c00", "optimizing": "#7e57c2"}
 
 
 # ---------------- 录音 / 识别 ----------------
@@ -332,10 +371,11 @@ class App:
         self.events = queue.Queue()
         self.recorder = Recorder()
         self.model = None
-        self.state = "loading"  # loading / idle / recording / transcribing / editing
+        self.state = "loading"  # loading / idle / recording / transcribing / editing / optimizing
         self.target_hwnd = None
         self.restart = False
         self.notice = None  # (类型, 截止时间)：empty / error / wait
+        self.llm_seq = 0  # 每次优化加 1，用来丢弃已放弃的旧结果
 
         self.root = tk.Tk()
         self.root.title("语音输入")
@@ -441,11 +481,12 @@ class App:
                 bh = max(3, h * min(1.0, 0.15 + level * wobble))
                 x = i * (bw + gap)
                 m.create_rectangle(x, (h - bh) / 2, x + bw, (h + bh) / 2, fill=ACCENTS["recording"], width=0)
-        elif self.state == "transcribing":
+        elif self.state in ("transcribing", "optimizing"):
+            on_color, off_color = (ACCENTS["transcribing"], "#4a4130") if self.state == "transcribing" else (ACCENTS["optimizing"], "#3a3350")
             for i in range(n):
                 on = int(t * 6) % n == i
                 x = i * (bw + gap)
-                m.create_rectangle(x, h / 2 - 2, x + bw, h / 2 + 2, fill=ACCENTS["transcribing"] if on else "#4a4130", width=0)
+                m.create_rectangle(x, h / 2 - 2, x + bw, h / 2 + 2, fill=on_color if on else off_color, width=0)
         elif self.notice and t < self.notice[1]:
             kind = self.notice[0]
             if kind == "wait":  # 模型还在加载：灰点闪烁
@@ -459,12 +500,54 @@ class App:
         self.root.after(60, self._animate)
 
     def run_llm(self):
-        """占位：以后接入「LLM 优化提示词」。"""
-        if self.state != "editing":
+        """✦：把文本框内容交给大模型整理成提示词，结果替换文本框（Ctrl+Z 可以撤回原文）。"""
+        text = self._get_text()
+        if self.state != "editing" or not text:
             return
-        log.info("[LLM] 按下（功能开发中）")
         self.llm_btn.config(bg=COLORS["llm_fg"], fg=COLORS["llm_bg"])  # 按钮反色闪一下
         self.root.after(250, lambda: self.llm_btn.config(bg=COLORS["llm_bg"], fg=COLORS["llm_fg"]))
+        self.llm_seq += 1
+        self._set_state("optimizing")
+        log.info(f"[LLM] 开始优化（{self.cfg['llm']['model']}）")
+        threading.Thread(target=self._call_llm, args=(self.llm_seq, text), name="llm", daemon=True).start()
+        self.text.focus_force()
+
+    def _call_llm(self, seq, text):
+        c = self.cfg["llm"]
+        t = time.time()
+        try:
+            base_url, api_key = os.environ.get(c["base_url_env"]), os.environ.get(c["api_key_env"])
+            if not base_url or not api_key:
+                raise RuntimeError(f"环境变量 {c['base_url_env']} / {c['api_key_env']} 没有设置")
+            from openai import OpenAI  # 用到时才导入，不拖慢启动
+            client = OpenAI(base_url=base_url, api_key=api_key, timeout=c["timeout"])
+            resp = client.chat.completions.create(
+                model=c["model"], temperature=0.2, extra_body={"enable_thinking": False},
+                messages=[{"role": "system", "content": c["system_prompt"]}, {"role": "user", "content": text}],
+            )
+            result = (resp.choices[0].message.content or "").strip()
+            log.info(f"[LLM] 完成，用时 {time.time() - t:.1f}s：{result!r}")
+            self.events.put(("llm_result", (seq, result)))
+        except Exception as e:
+            log.error(f"[LLM] 失败：{e}")
+            self.events.put(("llm_result", (seq, None)))
+
+    def on_llm_result(self, seq, result):
+        if self.state != "optimizing" or seq != self.llm_seq:  # 已经按 Esc 放弃了这次优化
+            return
+        self._set_state("editing")
+        if not result:
+            self._notify("error", 2.5)
+            return
+        if self.cfg["normalize_punctuation"]:
+            result = normalize_punctuation(result)
+        # 删除 + 插入合成一步撤销（Tk 默认会在两者之间自动插分隔点，Ctrl+Z 就只撤回一半）
+        self.text.edit_separator()
+        self.text.config(autoseparators=False)
+        self.text.delete("1.0", "end")
+        self.text.insert("1.0", result)
+        self.text.edit_separator()
+        self.text.config(autoseparators=True)
         self.text.focus_force()
 
     def _notify(self, kind, seconds=1.5):
@@ -491,6 +574,8 @@ class App:
             )
             sep = "" if language == "zh" else " "
             text = sep.join(s.text.strip() for s in segments).strip()
+            if self.cfg["normalize_punctuation"]:
+                text = normalize_punctuation(text)
         except Exception as e:
             log.info(f"[识别] 出错：{e}")
             text = ""
@@ -506,6 +591,8 @@ class App:
                 elif kind == "model":
                     self.model = payload
                     self._set_state("idle" if self.state == "loading" else self.state)
+                elif kind == "llm_result":
+                    self.on_llm_result(*payload)
                 elif kind == "result":
                     self.on_result(payload)
                 elif kind in ("quit", "restart", "fatal"):
@@ -527,7 +614,7 @@ class App:
         if self.model is None:
             return "模型加载中…"
         return {"idle": f"就绪，按 {self.keys['start_record']} 说话", "editing": "编辑中",
-                "recording": "录音中", "transcribing": "识别中"}[self.state]
+                "recording": "录音中", "transcribing": "识别中", "optimizing": "LLM 优化中"}[self.state]
 
     def _set_state(self, state):
         self.state = state
@@ -637,6 +724,10 @@ class App:
 
     def cancel(self):
         if self.state == "transcribing":
+            return
+        if self.state == "optimizing":  # 第一次 Esc 只放弃优化，保留原文
+            log.info("[LLM] 已放弃")
+            self._set_state("editing")
             return
         if self.state == "recording":
             self.recorder.stop()
