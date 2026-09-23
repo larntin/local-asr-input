@@ -37,7 +37,7 @@ except ValueError as e: check("win in popup rejected", "Win" in str(e))
 json.dump({"hotkeys": {"start_record": "F10", "stop_record": "F11", "quit": "Ctrl+Alt+F12", "commit": "Ctrl+Enter"}},
           open(CFG, "w", encoding="utf-8"))
 cfg = a.load_config()
-check("merge defaults", cfg["hotkeys"]["cancel"] == "Esc" and cfg["model"] == "large-v3-turbo")
+check("merge defaults", cfg["hotkeys"]["cancel"] == "Esc" and cfg["model"] == "large-v3-turbo" and cfg["font_size"] == 11)
 
 # 3) 完整流程（假模型/假麦克风/不真正切窗口和粘贴）
 class Seg:  text = " 你好世界 "

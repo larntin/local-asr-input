@@ -247,7 +247,7 @@ DEFAULT_CONFIG = {
         "llm": "Ctrl+L",
     },
     "ui_language": "auto",
-    "font_size": 15,
+    "font_size": 11,
     "normalize_punctuation": True,
     "auto_llm": True,
     "log_level": "info",
