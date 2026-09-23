@@ -218,7 +218,7 @@ DEFAULT_CONFIG = {
         "按键写法": "修饰键 Ctrl / Alt / Shift / Win（Win 只能用于全局热键）+ 一个键，用 + 连接，如 Ctrl+Alt+F9。"
                   "可用的键：F1~F24、A~Z、0~9、Enter、Esc、Space、Tab、Backspace、Insert、Delete、Home、End、"
                   "PageUp、PageDown、Pause、ScrollLock",
-        "model": "faster-whisper 模型名：medium（已下载）/ large-v3-turbo（中文更准，首次约下载 1.6GB）等",
+        "model": "faster-whisper 模型名：large-v3-turbo（默认，快且中文准）/ medium 等，本机没有时首次会自动下载",
         "生效": "改完后在托盘图标右键点「重启」生效",
     },
     "hotkeys": {
@@ -232,7 +232,7 @@ DEFAULT_CONFIG = {
     },
     "font_size": 15,
     "normalize_punctuation": True,
-    "model": "medium",
+    "model": "large-v3-turbo",
     "language": "zh",
     "initial_prompt": "以下是普通话的句子，使用简体中文，其中可能夹杂英文编程术语。",
     "llm": {
