@@ -10,8 +10,9 @@
       Ctrl+Alt+F9    全局：退出程序
   - 识别结果自动整理标点（﹐﹑ → ，、；挨着中文的英文标点 → 全角）
   - ✦ 默认走阿里百炼（OpenAI 兼容接口），地址和 key 从环境变量读，见 config.json 的 llm 项
-  - 托盘图标颜色表示状态：灰=模型加载中 绿=就绪 红=录音中 橙=识别中
-    右键菜单：编辑配置 / 重启（重新读取配置）/ 打开日志 / 退出
+  - 所有设置集中在 ⚙ 设置对话框（弹窗右下角 ✦ 左边，或托盘右键「设置」），保存后自动重启生效
+  - 托盘图标颜色表示状态：灰=模型加载中 绿=就绪 红=录音中 橙=识别中 紫=LLM 优化中
+    右键菜单：设置 / 重启（重新读取配置）/ 打开日志 / 退出
   - 只允许运行一个实例，重复启动会弹提示
 """
 
@@ -19,6 +20,7 @@ import ctypes
 import hashlib
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -29,12 +31,13 @@ import threading
 import time
 import tkinter as tk
 from ctypes import wintypes
+from tkinter import ttk
 
 import numpy as np
 import pystray
 import sounddevice as sd
 from faster_whisper import WhisperModel
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(APP_DIR, "asr_input.log")
@@ -187,6 +190,23 @@ def parse_key(spec):
     return mods, vk, tk_seq
 
 
+KEY_DISPLAY = {"enter": "Enter", "esc": "Esc", "space": "Space", "tab": "Tab", "backspace": "Backspace",
+               "insert": "Insert", "delete": "Delete", "home": "Home", "end": "End", "pageup": "PageUp",
+               "pagedown": "PageDown", "pause": "Pause", "scrolllock": "ScrollLock"}
+KEYSYM_TO_NAME = {}
+for _name, (_vk, _keysym) in KEYS.items():
+    KEYSYM_TO_NAME.setdefault(_keysym.lower(), _name)  # Escape 优先对应 esc
+
+
+def spec_from_event(e):
+    """Tk 按键事件 -> "Ctrl+Alt+F9"；只按了修饰键或不支持的键返回 None。"""
+    name = KEYSYM_TO_NAME.get(e.keysym.lower())
+    if name is None:
+        return None
+    mods = [m for m, bit in (("Ctrl", 0x4), ("Alt", 0x20000), ("Shift", 0x1)) if e.state & bit]
+    return "+".join(mods + [KEY_DISPLAY.get(name) or name.upper()])
+
+
 # ---------------- 标点整理 ----------------
 SMALL_FORM_PUNCT = str.maketrans("﹐﹑﹔﹕﹖﹗", "，、；：？！")  # Whisper 常吐出的小号标点
 ASCII_TO_FULL = {",": "，", "?": "？", "!": "！", ":": "：", ";": "；"}
@@ -266,14 +286,40 @@ def load_config():
     cfg = {**DEFAULT_CONFIG, **user,
            "hotkeys": {**DEFAULT_CONFIG["hotkeys"], **user.get("hotkeys", {})},
            "llm": {**DEFAULT_CONFIG["llm"], **user.get("llm", {})}}
+    validate_config(cfg)
+    return cfg
+
+
+def validate_config(cfg):
+    """校验快捷键和数值项，有问题抛 ValueError（信息直接给用户看）。"""
+    parsed = {}
     for name in GLOBAL_KEYS + POPUP_KEYS:
         try:
-            _, _, tk_seq = parse_key(cfg["hotkeys"][name])
+            mods, vk, tk_seq = parse_key(cfg["hotkeys"][name])
         except ValueError as e:
             raise ValueError(f"hotkeys.{name}：{e}") from None
         if name in POPUP_KEYS and tk_seq is None:
             raise ValueError(f"hotkeys.{name}：Win 键只能用于全局热键")
-    return cfg
+        parsed[name] = (mods, vk)
+    # 同一组里不能撞键（开始 / 结束录音允许相同 = 来回切换）
+    for group in (("start_record", "quit"), ("stop_record", "quit"), POPUP_KEYS):
+        seen = {}
+        for name in group:
+            if parsed[name] in seen:
+                raise ValueError(f"hotkeys.{name} 和 hotkeys.{seen[parsed[name]]} 用了同一个键")
+            seen[parsed[name]] = name
+    if not (isinstance(cfg["font_size"], int) and 8 <= cfg["font_size"] <= 40):
+        raise ValueError("font_size 要是 8~40 之间的整数")
+    if not (isinstance(cfg["llm"]["timeout"], int) and 1 <= cfg["llm"]["timeout"] <= 300):
+        raise ValueError("llm.timeout 要是 1~300 之间的整数（秒）")
+
+
+def save_config(cfg):
+    order = ["_说明", "hotkeys", "font_size", "normalize_punctuation", "model", "language", "initial_prompt", "llm"]
+    data = {k: cfg[k] for k in order if k in cfg} | {k: v for k, v in cfg.items() if k not in order}
+    data["_说明"] = DEFAULT_CONFIG["_说明"]
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def hotkey_loop(events, hotkeys):
@@ -294,7 +340,7 @@ def hotkey_loop(events, hotkeys):
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
         if msg.message == WM_HOTKEY:
             action = regs[msg.wParam - 1][0]
-            events.put(("quit", None) if action == "quit" else ("hotkey", action))
+            events.put(("hotkey", action))
 
 
 # ---------------- 托盘图标 ----------------
@@ -307,6 +353,23 @@ def make_icon(color):
     d.line((32, 50, 32, 58), fill=color, width=4)
     d.line((22, 58, 42, 58), fill=color, width=4)
     return img
+
+
+def make_gear(size, color):
+    """画 ⚙ 设置图标：先画 4 倍大再缩小，边缘平滑。"""
+    s = size * 4
+    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    c, teeth = s / 2, 8
+    outer, inner, hole = s * 0.48, s * 0.34, s * 0.14
+    pts = []
+    for i in range(teeth * 4):  # 每个齿 4 个点：齿根-齿顶-齿顶-齿根
+        a = 2 * math.pi * (i - 0.5) / (teeth * 4)
+        r = outer if i % 4 in (1, 2) else inner
+        pts.append((c + r * math.cos(a), c + r * math.sin(a)))
+    d.polygon(pts, fill=color)
+    d.ellipse((c - hole, c - hole, c + hole, c + hole), fill=(0, 0, 0, 0))
+    return img.resize((size, size), Image.LANCZOS)
 
 
 TRAY_COLORS = {"loading": "#9e9e9e", "idle": "#2e7d32", "editing": "#2e7d32", "recording": "#d32f2f", "transcribing": "#ef6c00", "optimizing": "#7e57c2"}
@@ -363,6 +426,237 @@ def load_model(name, language):
     raise RuntimeError("模型加载失败")
 
 
+# ---------------- 设置对话框 ----------------
+class SettingsDialog:
+    """⚙ 所有配置集中在这里；保存时校验、写 config.json，然后重启生效。"""
+
+    HOTKEY_FIELDS = [("start_record", "开始录音（全局）"), ("stop_record", "结束录音（全局）"), ("quit", "退出程序（全局）"),
+                     ("commit", "上屏"), ("cancel", "取消"), ("newline", "换行"), ("llm", "LLM 优化")]
+    WHISPER_MODELS = ["large-v3-turbo", "medium", "small", "large-v3"]
+    LANGUAGES = ["zh", "en", "ja", "ko"]
+    LLM_MODELS = ["deepseek-v4-flash", "qwen3-max", "qwen-plus", "qwen-flash"]
+
+    def __init__(self, app):
+        self.app = app
+        self.capturing = None  # 正在录入快捷键的输入框
+        cfg, c = app.cfg, COLORS
+        self.scale = scale = app.root.winfo_fpixels("1i") / 96
+        px = lambda v: round(v * scale)
+
+        w = self.win = tk.Toplevel(app.root)
+        w.withdraw()
+        w.title("语音输入 · 设置")
+        w.configure(bg=c["bg"])
+        w.attributes("-topmost", True)
+        w.resizable(False, False)
+        w.protocol("WM_DELETE_WINDOW", self.close)
+        w.bind("<Escape>", lambda e: self.close())
+        w.report_callback_exception = app.root.report_callback_exception
+
+        style = ttk.Style(w)
+        style.theme_use("clam")
+        style.configure("Dark.TCombobox", fieldbackground=c["bar"], background=c["bar"], foreground=c["fg"],
+                        arrowcolor=c["muted"], bordercolor=c["border"], lightcolor=c["bar"], darkcolor=c["bar"],
+                        selectbackground=c["bar"], selectforeground=c["fg"], padding=px(4))
+        style.map("Dark.TCombobox", fieldbackground=[("readonly", c["bar"])], foreground=[("readonly", c["fg"])])
+        w.option_add("*TCombobox*Listbox.background", c["bar"])
+        w.option_add("*TCombobox*Listbox.foreground", c["fg"])
+        w.option_add("*TCombobox*Listbox.selectBackground", "#3d4455")
+        w.option_add("*TCombobox*Listbox.font", (UI_FONT, 10))
+
+        self.entry_style = dict(bg=c["bar"], fg=c["fg"], insertbackground=c["fg"], relief="flat", font=(UI_FONT, 10),
+                                highlightthickness=1, highlightbackground=c["border"], highlightcolor=ACCENTS["optimizing"])
+        body = tk.Frame(w, bg=c["bg"], padx=px(22), pady=px(14))
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        self.body, self.row = body, 0
+
+        self._section("快捷键", "点一下输入框，直接按下想要的组合键")
+        self.hotkey_vars, self.entry_vars = {}, {}
+        for name, label in self.HOTKEY_FIELDS:
+            var = tk.StringVar(value=cfg["hotkeys"][name])
+            e = tk.Entry(body, textvariable=var, state="readonly", readonlybackground=c["bar"], cursor="hand2",
+                         **{k: v for k, v in self.entry_style.items() if k != "bg"})
+            e.bind("<FocusIn>", lambda ev, e=e: self._capture_start(e))
+            e.bind("<FocusOut>", lambda ev: self._capture_stop())
+            e.bind("<KeyPress>", lambda ev, var=var: self._capture_key(ev, var))
+            e.bind("<Button-1>", lambda ev, e=e: e.focus_set())
+            self._row(label, e)
+            self.hotkey_vars[name] = self.entry_vars[e] = var
+
+        self._section("显示")
+        self.font_var = tk.StringVar(value=str(cfg["font_size"]))
+        self._row("输入框字号", tk.Spinbox(body, from_=8, to=40, textvariable=self.font_var, width=6,
+                                        buttonbackground=c["bar"], **self.entry_style), sticky="w")
+
+        self._section("识别")
+        self.model_var = tk.StringVar(value=cfg["model"])
+        self._row("Whisper 模型", self._combo(self.model_var, self.WHISPER_MODELS))
+        self.lang_var = tk.StringVar(value=cfg["language"])
+        self._row("语言", self._combo(self.lang_var, self.LANGUAGES, width=8), sticky="w")
+        self.prompt_var = tk.StringVar(value=cfg["initial_prompt"])
+        self._row("识别提示词", tk.Entry(body, textvariable=self.prompt_var, **self.entry_style))
+        self.punct_var = tk.BooleanVar(value=cfg["normalize_punctuation"])
+        self._row("", tk.Checkbutton(body, text="自动整理标点（﹐﹑ → ，、；挨着中文的英文标点转全角）", variable=self.punct_var,
+                                     bg=c["bg"], fg=c["fg"], selectcolor=c["bar"], activebackground=c["bg"],
+                                     activeforeground=c["fg"], font=(UI_FONT, 10), anchor="w"))
+
+        llm = cfg["llm"]
+        self._section("✦ LLM 优化", "OpenAI 兼容接口；地址和 key 填环境变量名，key 不保存在配置里")
+        self.llm_model_var = tk.StringVar(value=llm["model"])
+        self._row("模型", self._combo(self.llm_model_var, self.LLM_MODELS))
+        self.base_env_var = tk.StringVar(value=llm["base_url_env"])
+        self._row("接口地址变量", self._env_entry(self.base_env_var))
+        self.key_env_var = tk.StringVar(value=llm["api_key_env"])
+        self._row("API Key 变量", self._env_entry(self.key_env_var))
+        self.timeout_var = tk.StringVar(value=str(llm["timeout"]))
+        self._row("超时（秒）", tk.Spinbox(body, from_=1, to=300, textvariable=self.timeout_var, width=6,
+                                        buttonbackground=c["bar"], **self.entry_style), sticky="w")
+        self.system_text = tk.Text(body, height=7, width=1, wrap="char", undo=True, padx=px(6), pady=px(4), **self.entry_style)
+        self.system_text.insert("1.0", llm["system_prompt"])
+        self._row("整理规则", self.system_text, top=True)
+
+        foot = tk.Frame(w, bg=c["bar"], padx=px(22), pady=px(10))
+        foot.pack(fill="x")
+        self.error = tk.Label(foot, text="", bg=c["bar"], fg=ACCENTS["recording"], font=(UI_FONT, 10),
+                              anchor="w", justify="left", wraplength=px(330))
+        self.error.pack(side="left", fill="x", expand=True)
+        self._button(foot, "保存并重启", self.save, primary=True).pack(side="right")
+        self._button(foot, "取消", self.close).pack(side="right", padx=px(8))
+
+        w.update_idletasks()
+        ww, wh = px(600), w.winfo_reqheight()
+        w.geometry(f"{ww}x{wh}+{(w.winfo_screenwidth() - ww) // 2}+{max(0, (w.winfo_screenheight() - wh) // 2)}")
+        w.deiconify()
+        try:  # Win11 深色标题栏
+            hwnd = wintypes.HWND(int(w.wm_frame(), 16))
+            dark = ctypes.c_int(1)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), ctypes.sizeof(dark))
+        except Exception:
+            pass
+        self.focus()
+
+    # ---------- 布局小工具 ----------
+    def _section(self, title, hint=""):
+        c, px = COLORS, lambda v: round(v * self.scale)
+        f = tk.Frame(self.body, bg=c["bg"])
+        f.grid(row=self.row, column=0, columnspan=2, sticky="we", pady=(px(14) if self.row else 0, px(6)))
+        tk.Label(f, text=title, bg=c["bg"], fg=c["llm_fg"], font=(UI_FONT, 11, "bold")).pack(side="left")
+        if hint:
+            tk.Label(f, text=hint, bg=c["bg"], fg=c["muted"], font=(UI_FONT, 9)).pack(side="left", padx=px(10))
+        self.row += 1
+
+    def _row(self, label, widget, sticky="we", top=False):
+        c, px = COLORS, lambda v: round(v * self.scale)
+        tk.Label(self.body, text=label, bg=c["bg"], fg=c["muted"], font=(UI_FONT, 10), anchor="ne" if top else "e") \
+            .grid(row=self.row, column=0, sticky="ne" if top else "e", padx=(0, px(12)), pady=px(3))
+        widget.grid(row=self.row, column=1, sticky=sticky, pady=px(3), ipady=px(2) if isinstance(widget, tk.Entry) else 0)
+        self.row += 1
+
+    def _combo(self, var, values, width=None):
+        cb = ttk.Combobox(self.body, textvariable=var, values=values, style="Dark.TCombobox", font=(UI_FONT, 10))
+        if width:
+            cb.configure(width=width)
+        return cb
+
+    def _env_entry(self, var):
+        """环境变量名输入框，右边显示这个变量当前有没有设置。"""
+        c = COLORS
+        f = tk.Frame(self.body, bg=c["bg"])
+        tk.Entry(f, textvariable=var, **self.entry_style).pack(side="left", fill="x", expand=True, ipady=round(2 * self.scale))
+        status = tk.Label(f, bg=c["bg"], font=(UI_FONT, 10), width=8, anchor="w")
+        status.pack(side="left", padx=(round(8 * self.scale), 0))
+
+        def refresh(*_):
+            ok = bool(os.environ.get(var.get().strip()))
+            status.config(text="✓ 已设置" if ok else "✗ 未设置", fg=ACCENTS["idle"] if ok else ACCENTS["recording"])
+        var.trace_add("write", refresh)
+        refresh()
+        return f
+
+    def _button(self, parent, text, command, primary=False):
+        c = COLORS
+        bg, fg, hover = (ACCENTS["idle"], "#0f1a14", "#63d49c") if primary else (c["border"], c["fg"], "#454a58")
+        b = tk.Label(parent, text=text, bg=bg, fg=fg, font=(UI_FONT, 10, "bold" if primary else "normal"),
+                     padx=round(14 * self.scale), pady=round(5 * self.scale), cursor="hand2")
+        b.bind("<Button-1>", lambda e: command())
+        b.bind("<Enter>", lambda e: b.config(bg=hover))
+        b.bind("<Leave>", lambda e: b.config(bg=bg))
+        return b
+
+    # ---------- 快捷键录入 ----------
+    def _capture_start(self, entry):
+        self.capturing = entry
+        entry.config(fg=ACCENTS["optimizing"])
+
+    def _capture_stop(self):
+        if self.capturing is not None:
+            self.capturing.config(fg=COLORS["fg"])
+        self.capturing = None
+
+    def _capture_key(self, e, var):
+        spec = spec_from_event(e)
+        if spec:
+            var.set(spec)
+        return "break"  # 不让 Esc 之类的键触发对话框自己的快捷键
+
+    def capture_spec(self, spec):
+        """全局热键被系统截走、到不了输入框，由 App 转交过来。"""
+        if self.capturing is not None:
+            self.entry_vars[self.capturing].set(spec)
+
+    # ---------- 打开 / 保存 / 关闭 ----------
+    def alive(self):
+        try:
+            return bool(self.win.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def focus(self):
+        self.win.deiconify()
+        self.win.lift()
+        focus_window(int(self.win.wm_frame(), 16))
+        self.win.focus_force()
+
+    def close(self):
+        self.capturing = None
+        if self.alive():
+            self.win.destroy()
+
+    def save(self):
+        new = json.loads(json.dumps(self.app.cfg))  # 深拷贝
+        for name, var in self.hotkey_vars.items():
+            new["hotkeys"][name] = var.get().strip()
+        try:
+            new["font_size"] = int(self.font_var.get())
+            new["llm"]["timeout"] = int(self.timeout_var.get())
+        except ValueError:
+            self.error.config(text="字号和超时要填整数")
+            return
+        new["model"] = self.model_var.get().strip()
+        new["language"] = self.lang_var.get().strip()
+        new["initial_prompt"] = self.prompt_var.get().strip()
+        new["normalize_punctuation"] = bool(self.punct_var.get())
+        new["llm"].update(model=self.llm_model_var.get().strip(), base_url_env=self.base_env_var.get().strip(),
+                          api_key_env=self.key_env_var.get().strip(),
+                          system_prompt=self.system_text.get("1.0", "end-1c").strip())
+        if not new["model"] or not new["llm"]["model"]:
+            self.error.config(text="模型名不能为空")
+            return
+        try:
+            validate_config(new)
+        except ValueError as e:
+            msg = str(e)
+            for name, label in self.HOTKEY_FIELDS:  # 内部名字换成界面上的叫法
+                msg = msg.replace(f"hotkeys.{name}", f"「{label}」")
+            self.error.config(text=msg.replace("llm.timeout", "「超时」").replace("font_size", "「输入框字号」"))
+            return
+        save_config(new)
+        log.info("[设置] 已保存，重启生效")
+        self.close()
+        self.app.events.put(("restart", None))
+
+
 # ---------------- 界面 ----------------
 class App:
     def __init__(self, cfg):
@@ -376,6 +670,7 @@ class App:
         self.restart = False
         self.notice = None  # (类型, 截止时间)：empty / error / wait
         self.llm_seq = 0  # 每次优化加 1，用来丢弃已放弃的旧结果
+        self.settings = None  # 打开着的设置对话框
 
         self.root = tk.Tk()
         self.root.title("语音输入")
@@ -390,7 +685,7 @@ class App:
             "asr_input", make_icon(TRAY_COLORS["loading"]), "语音输入：" + self._tray_text(),
             menu=pystray.Menu(
                 pystray.MenuItem(lambda item: "状态：" + self._tray_text(), None, enabled=False),
-                pystray.MenuItem("编辑配置", lambda: subprocess.Popen(["notepad.exe", CONFIG_FILE])),
+                pystray.MenuItem("设置", lambda: self.events.put(("settings", None))),
                 pystray.MenuItem("重启（重新读取配置）", lambda: self.events.put(("restart", None))),
                 pystray.MenuItem("打开日志", lambda: os.startfile(LOG_FILE)),
                 pystray.MenuItem("退出", lambda: self.events.put(("quit", None))),
@@ -429,6 +724,16 @@ class App:
         self.llm_btn.bind("<Button-1>", lambda e: self.run_llm())
         self.llm_btn.bind("<Enter>", lambda e: self.llm_btn.config(bg=c["llm_hover"]))
         self.llm_btn.bind("<Leave>", lambda e: self.llm_btn.config(bg=c["llm_bg"]))
+        # ⚙ 设置：在 ✦ 左边
+        self.gear_img = ImageTk.PhotoImage(make_gear(round(14 * scale), c["llm_fg"]))
+        # 图片按钮不认 padx/pady，直接用和 ✦ 一样的像素尺寸，底色块才对齐
+        edge = 2 * (int(self.llm_btn["borderwidth"]) + int(self.llm_btn["highlightthickness"]))
+        self.gear_btn = tk.Label(bar, image=self.gear_img, bg=c["llm_bg"], cursor="hand2",
+                                 width=self.llm_btn.winfo_reqwidth() - edge, height=self.llm_btn.winfo_reqheight() - edge)
+        self.gear_btn.pack(side="right", padx=(0, round(2 * scale)))
+        self.gear_btn.bind("<Button-1>", lambda e: self.open_settings())
+        self.gear_btn.bind("<Enter>", lambda e: self.gear_btn.config(bg=c["llm_hover"]))
+        self.gear_btn.bind("<Leave>", lambda e: self.gear_btn.config(bg=c["llm_bg"]))
 
         self.text = tk.Text(panel, font=(UI_FONT, self.cfg["font_size"]), wrap="word", width=1, height=4, undo=True,
                             bg=c["bg"], fg=c["fg"], insertbackground=c["fg"], selectbackground="#3d4455",
@@ -597,6 +902,8 @@ class App:
                 elif kind == "model":
                     self.model = payload
                     self._set_state("idle" if self.state == "loading" else self.state)
+                elif kind == "settings":
+                    self.open_settings()
                 elif kind == "llm_result":
                     self.on_llm_result(*payload)
                 elif kind == "result":
@@ -629,8 +936,22 @@ class App:
         self.tray.title = "语音输入：" + self._tray_text()
         self.tray.update_menu()
 
+    def open_settings(self):
+        if self.settings is not None and self.settings.alive():
+            self.settings.focus()
+        else:
+            self.settings = SettingsDialog(self)
+
     def on_hotkey(self, action):
-        """action: toggle（开始/结束同一个键）/ start / stop。"""
+        """action: toggle（开始/结束同一个键）/ start / stop / quit。"""
+        if self.settings is not None and self.settings.alive() and self.settings.capturing is not None:
+            # 设置里正在录入快捷键：已注册的全局热键被系统截走了，转交给输入框
+            spec = {"toggle": "start_record", "start": "start_record", "stop": "stop_record", "quit": "quit"}[action]
+            self.settings.capture_spec(self.keys[spec])
+            return
+        if action == "quit":
+            self.events.put(("quit", None))
+            return
         log.info(f"[热键] {action}，当前状态 {self.state}")
         if self.state == "recording":
             if action in ("toggle", "stop"):
