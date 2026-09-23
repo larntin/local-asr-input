@@ -7,8 +7,8 @@ Press a hotkey and speak. Your speech is transcribed on your own machine by [fas
 Transcription costs nothing and your audio never leaves your computer. Optionally, any LLM can tidy up the text for you (both OpenAI and Anthropic APIs are supported).
 
 <p align="center">
-  <img src="docs/images/en/popup-recording.png" width="640" alt="Recording"><br>
-  <img src="docs/images/en/popup-editing.png" width="640" alt="Transcribed, ready to edit and insert">
+  <img src="docs/images/en/demo.gif" width="720" alt="Demo: record, transcribe, LLM clean-up"><br>
+  <sub>Record → transcribe → ✦ LLM clean-up → press Enter to insert</sub>
 </p>
 
 ## Features

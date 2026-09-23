@@ -7,8 +7,8 @@
 识别不花钱、录音不出本机；想让文字更规整，可以接上任意大模型自动整理（OpenAI / Anthropic 两种协议都支持）。
 
 <p align="center">
-  <img src="docs/images/zh/popup-recording.png" width="640" alt="录音中"><br>
-  <img src="docs/images/zh/popup-editing.png" width="640" alt="识别完成，可以编辑后上屏">
+  <img src="docs/images/zh/demo.gif" width="720" alt="演示：录音、识别、LLM 整理"><br>
+  <sub>录音 → 识别 → ✦ LLM 整理 → 按 Enter 上屏</sub>
 </p>
 
 ## 特点
