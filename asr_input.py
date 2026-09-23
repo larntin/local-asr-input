@@ -466,18 +466,12 @@ class SettingsDialog:
 
         self.entry_style = dict(bg=c["bar"], fg=c["fg"], insertbackground=c["fg"], relief="flat", font=(UI_FONT, 10),
                                 highlightthickness=1, highlightbackground=c["border"], highlightcolor=ACCENTS["optimizing"])
-        # 三个页签：✦ LLM / 快捷键 / 常规（显示 + 识别）
-        style.configure("Dark.TNotebook", background=c["bar"], borderwidth=0, tabmargins=(px(14), px(8), 0, 0),
-                        bordercolor=c["bg"], lightcolor=c["bg"], darkcolor=c["bg"])  # 内容区不要亮边框
-        style.configure("Dark.TNotebook.Tab", background=c["bar"], foreground=c["muted"], borderwidth=0,
-                        padding=(px(18), px(7)), font=(UI_FONT, 10), lightcolor=c["bar"], bordercolor=c["bar"])
-        style.map("Dark.TNotebook.Tab", background=[("selected", c["bg"])], foreground=[("selected", c["llm_fg"])],
-                  lightcolor=[("selected", c["bg"])], bordercolor=[("selected", c["bg"])], expand=[("selected", (0, 0, 0, 0))])
-        style.layout("Dark.TNotebook.Tab", [("Notebook.tab", {"sticky": "nswe", "children": [
-            ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
-                ("Notebook.label", {"side": "top", "sticky": ""})]})]})])  # 去掉选中页签的虚线焦点框
-        self.tabs = ttk.Notebook(w, style="Dark.TNotebook", takefocus=False)
-        self.tabs.pack(fill="both", expand=True)
+        # 三个页签：✦ LLM / 快捷键 / 常规（显示 + 识别）。自己画页签栏：ttk.Notebook 选中时会放大上移，看着跳
+        self.tab_bar = tk.Frame(w, bg=c["bar"], padx=px(14))
+        self.tab_bar.pack(fill="x")
+        self.content = tk.Frame(w, bg=c["bg"])
+        self.content.pack(fill="both", expand=True)
+        self.tab_list = []  # [(标题, 内容 Frame, 文字 Label, 下划线 Frame)]
 
         llm = cfg["llm"]
         self.tab_llm = self._tab("✦ LLM")
@@ -536,6 +530,10 @@ class SettingsDialog:
         self._button(foot, "取消", self.close).pack(side="right", padx=px(8))
 
         w.update_idletasks()
+        self.content.config(width=px(600), height=max(f.winfo_reqheight() for _, f, _, _ in self.tab_list))
+        self.content.pack_propagate(False)
+        self.select_tab(self.tab_list[0][1])
+        w.update_idletasks()
         ww, wh = px(600), w.winfo_reqheight()
         w.geometry(f"{ww}x{wh}+{(w.winfo_screenwidth() - ww) // 2}+{max(0, (w.winfo_screenheight() - wh) // 2)}")
         w.deiconify()
@@ -551,11 +549,35 @@ class SettingsDialog:
     def _tab(self, title):
         """新建一个页签，之后的 _section / _row 都加到这个页签里。"""
         px = lambda v: round(v * self.scale)
-        f = tk.Frame(self.tabs, bg=COLORS["bg"], padx=px(22), pady=px(16))
+        c = COLORS
+        f = tk.Frame(self.content, bg=c["bg"], padx=px(22), pady=px(16))
+        f.columnconfigure(0, minsize=px(110))  # 各页签标签列同宽，切换时输入框不左右错位
         f.columnconfigure(1, weight=1)
-        self.tabs.add(f, text=title)
+        item = tk.Frame(self.tab_bar, bg=c["bar"], cursor="hand2")
+        item.pack(side="left", padx=(0, px(4)), pady=(px(8), 0))
+        label = tk.Label(item, text=title, bg=c["bar"], fg=c["muted"], font=(UI_FONT, 10), padx=px(14), pady=px(6))
+        label.pack()
+        line = tk.Frame(item, bg=c["bar"], height=px(2))  # 选中时的下划线
+        line.pack(fill="x")
+        for widget in (item, label, line):
+            widget.bind("<Button-1>", lambda e, f=f: self.select_tab(f))
+        self.tab_list.append((title, f, label, line))
         self.body, self.row = f, 0
         return f
+
+    def select_tab(self, frame):
+        c = COLORS
+        for _, f, label, line in self.tab_list:
+            on = f is frame
+            label.config(fg=c["llm_fg"] if on else c["muted"])
+            line.config(bg=c["llm_fg"] if on else c["bar"])
+            if on:
+                f.pack(fill="both", expand=True)
+            else:
+                f.pack_forget()
+
+    def current_tab(self):
+        return next(title for title, f, _, _ in self.tab_list if f.winfo_manager())
 
     def _hint(self, text):
         px = lambda v: round(v * self.scale)
@@ -676,7 +698,7 @@ class SettingsDialog:
                 msg = msg.replace(f"hotkeys.{name}", f"「{label}」")
             self.error.config(text=msg.replace("llm.timeout", "「超时」").replace("font_size", "「输入框字号」"))
             tab = self.tab_keys if "hotkeys." in str(e) else self.tab_llm if "llm." in str(e) else self.tab_general
-            self.tabs.select(tab)
+            self.select_tab(tab)
             return
         save_config(new)
         log.info("[设置] 已保存，重启生效")
