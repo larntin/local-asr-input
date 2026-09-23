@@ -14,6 +14,7 @@
 ## 特点
 
 - **本地识别**：faster-whisper 跑在自己电脑上，有 NVIDIA 显卡自动用 GPU，没有就用 CPU。录音只在内存里，识别完即丢弃，不写硬盘、不上传。
+- **云端识别（可选）**：没有显卡、或者想要更准？把识别引擎切到云端 API：阿里百炼 `qwen3-asr-flash`、OpenAI `whisper-1`，或任何支持 OpenAI `/audio/transcriptions` 的服务。
 - **先看后发**：识别结果先出现在弹窗里，可以改错字、接着说、换行，确认后才上屏，不会把错字直接打进终端。
 - **上屏到原窗口**：按热键时记住你所在的窗口，确认后切回去用剪贴板粘贴，PowerShell / Windows Terminal / VS Code / 浏览器都能用。
 - **✦ LLM 整理（可选）**：把口述内容整理成清晰的文字，顺手修正同音错字（如「单立」→「单例」）。支持 **OpenAI** 和 **Anthropic** 两种协议，各模型平台的接口地址 + Key 填上就能用；Ctrl+Z 一步撤回原文。
@@ -75,6 +76,17 @@ set HF_ENDPOINT=https://hf-mirror.com
   <img src="docs/images/zh/settings-general.png" width="420" alt="常规设置">
 </p>
 
+### 云端语音识别（可选）
+
+在 ⚙ 设置 → 常规里把**识别引擎**切到**云端 API**，然后填：
+
+| 接口类型 | 适用 | 示例 |
+|---|---|---|
+| 聊天接口 + 音频 | 阿里百炼 Qwen3-ASR | `https://dashscope.aliyuncs.com/compatible-mode/v1`，模型 `qwen3-asr-flash` |
+| OpenAI 转写接口（`/audio/transcriptions`） | OpenAI、Groq 等兼容 OpenAI 的服务 | `https://api.openai.com/v1`，模型 `whisper-1` |
+
+接口地址和 Key 的填法和 LLM 一样（地址可以填 URL 或环境变量名，Key 放在环境变量里）。保存前可以点「测试连接」。用云端时不会加载本地 Whisper 模型，启动很快，也不需要显卡。
+
 ### 接入大模型（可选）
 
 不配置也完全能用，只是没有 ✦ 整理功能。配置方法：
@@ -97,7 +109,8 @@ set HF_ENDPOINT=https://hf-mirror.com
 
 ## 隐私
 
-- 录音只在内存里，识别在本机完成，不写硬盘、不上传。
+- 默认的本机识别：录音只在内存里，在本机完成识别，不写硬盘、不上传。
+- 如果把识别引擎切到**云端 API**，每段录音会发给你配置的服务商。
 - 只有开启了 ✦ LLM 整理时，识别出的**文字**才会发给你配置的模型平台。
 - 日志默认会记录识别出的文字，方便排查问题；介意的话在 ⚙ 设置 → 常规 → 日志级别选「仅错误和警告」。日志只保留最近 7 天。
 
@@ -115,7 +128,7 @@ python tests/run_all.py
 
 ## 计划
 
-- [ ] 云端语音识别：接入各平台的语音识别接口（填 URL + Key），没有显卡的电脑也能又快又准
+- [x] 云端语音识别（填 URL + Key），没有显卡的电脑也能用
 - [ ] 打包成 exe，下载即用，不用装 Python
 - [x] Gitee 镜像：https://gitee.com/larntin/local-asr-input
 

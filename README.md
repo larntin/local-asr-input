@@ -14,6 +14,7 @@ Transcription costs nothing and your audio never leaves your computer. Optionall
 ## Features
 
 - **Local speech recognition**: faster-whisper runs on your own computer, on the GPU if you have an NVIDIA card and on the CPU otherwise. Audio stays in memory and is discarded after transcription; nothing is written to disk or uploaded.
+- **Cloud recognition (optional)**: no GPU, or want even better accuracy? Switch the speech engine to a cloud API: Alibaba Bailian `qwen3-asr-flash`, OpenAI `whisper-1`, or anything that speaks OpenAI's `/audio/transcriptions`.
 - **Review before sending**: the transcription appears in a popup first. Fix words, keep talking, add line breaks, and only then insert it, so mistakes never land in your terminal.
 - **Pastes into the original window**: it remembers which window you were in when you pressed the hotkey, switches back and pastes via the clipboard. Works with PowerShell, Windows Terminal, VS Code, browsers and more.
 - **✦ LLM clean-up (optional)**: turns rambling speech into clear text and fixes mis-heard words. Works with **OpenAI**- and **Anthropic**-compatible APIs, so most model providers just need a URL and a key. Ctrl+Z restores the original.
@@ -68,6 +69,17 @@ Click ⚙ at the bottom right of the popup, or right-click the tray icon and cho
   <img src="docs/images/en/settings-general.png" width="420" alt="General settings">
 </p>
 
+### Cloud speech recognition (optional)
+
+In ⚙ Settings → General, set **Speech engine** to **Cloud API**, then fill in:
+
+| API type | Works with | Example |
+|---|---|---|
+| Chat API with audio | Alibaba Bailian Qwen3-ASR | `https://dashscope.aliyuncs.com/compatible-mode/v1`, model `qwen3-asr-flash` |
+| OpenAI transcription API (`/audio/transcriptions`) | OpenAI, Groq and other OpenAI-compatible services | `https://api.openai.com/v1`, model `whisper-1` |
+
+The API address and key work the same way as for the LLM (a URL or an environment variable name; the key always lives in an environment variable). Click **Test connection** before saving. In cloud mode the local Whisper model isn't loaded at all, so the app starts instantly and needs no GPU.
+
 ### Connecting an LLM (optional)
 
 Everything works without an LLM; you just won't have ✦ clean-up. To set it up:
@@ -92,7 +104,8 @@ Each protocol keeps its own settings, so switching back and forth doesn't overwr
 
 ## Privacy
 
-- Audio stays in memory and is transcribed locally. It is never written to disk or uploaded.
+- With the default local engine, audio stays in memory and is transcribed on your PC. It is never written to disk or uploaded.
+- If you switch the speech engine to **Cloud API**, each recording is sent to the provider you configured.
 - Only when ✦ LLM clean-up is used is the recognized **text** sent to the provider you configured.
 - By default the log includes the recognized text, which helps with troubleshooting. If you'd rather not, set ⚙ Settings → General → Log level to "Errors and warnings only". Logs are kept for 7 days.
 
@@ -112,7 +125,7 @@ To add a language, add a translation for every entry in `STRINGS` and `CONFIG_HE
 
 ## Roadmap
 
-- [ ] Cloud speech recognition: use a provider's speech-to-text API (URL + key), fast and accurate even without a GPU
+- [x] Cloud speech recognition (URL + key), for PCs without a GPU
 - [ ] A packaged `.exe`: download and run, no Python needed
 - [x] Gitee mirror: https://gitee.com/larntin/local-asr-input
 

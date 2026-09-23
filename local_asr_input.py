@@ -18,7 +18,9 @@
 """
 
 import ctypes
+import base64
 import hashlib
+import io
 import json
 import logging
 import logging.handlers
@@ -32,6 +34,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import wave
 from ctypes import wintypes
 from tkinter import ttk
 
@@ -245,6 +248,14 @@ DEFAULT_CONFIG = {
     "normalize_punctuation": True,
     "auto_llm": True,
     "log_level": "info",
+    "asr_engine": "local",
+    "cloud_asr": {
+        "api_style": "chat_audio",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key_env": "BAILIAN_API_KEY",
+        "model": "qwen3-asr-flash",
+        "timeout": 30,
+    },
     "model": "large-v3-turbo",
     "language": "zh",
     "initial_prompt": "以下是普通话的句子，使用简体中文，其中可能夹杂英文编程术语。",
@@ -279,7 +290,8 @@ def load_config():
         user = {k: v for k, v in json.load(f).items() if not k.startswith("_")}  # _说明 / _help 只给人看
     cfg = {**defaults, **user,
            "hotkeys": {**defaults["hotkeys"], **user.get("hotkeys", {})},
-           "llm": merge_llm(user.get("llm", {}), defaults["llm"])}
+           "llm": merge_llm(user.get("llm", {}), defaults["llm"]),
+           "cloud_asr": {**defaults["cloud_asr"], **user.get("cloud_asr", {})}}
     validate_config(cfg)
     return cfg
 
@@ -339,6 +351,15 @@ def validate_config(cfg):
         raise ValueError(t("err_ui_language", opts=" / ".join(UI_LANGUAGES)))
     if not (isinstance(cfg["llm"]["timeout"], int) and 1 <= cfg["llm"]["timeout"] <= 300):
         raise ValueError(t("err_timeout"))
+    if cfg["asr_engine"] not in ASR_ENGINES:
+        raise ValueError(t("err_asr_engine", opts=" / ".join(ASR_ENGINES)))
+    ca = cfg["cloud_asr"]
+    if ca["api_style"] not in ASR_API_STYLES:
+        raise ValueError(t("err_api_style", opts=" / ".join(ASR_API_STYLES)))
+    if cfg["asr_engine"] == "cloud" and not ca["model"].strip():
+        raise ValueError(t("err_cloud_model"))
+    if not (isinstance(ca["timeout"], int) and 1 <= ca["timeout"] <= 300):
+        raise ValueError(t("err_cloud_timeout"))
 
 
 LOG_LEVELS = {"info": logging.INFO, "error": logging.WARNING}  # error 档也保留警告，出问题时更好查
@@ -363,6 +384,55 @@ def llm_configured(llm):
 def describe_llm(llm):
     """「Anthropic · deepseek-v4-flash」这样的简短描述，给界面和日志用。"""
     return f"{LLM_PROTOCOLS[llm['protocol']]} · {llm[llm['protocol']]['model']}"
+
+
+ASR_ENGINES = ("local", "cloud")
+ASR_API_STYLES = ("chat_audio", "transcriptions")
+
+
+def wav_bytes(audio):
+    """16k 单声道 float32 -> WAV 文件内容（只在内存里，不落盘）。"""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
+    return buf.getvalue()
+
+
+def cloud_transcribe(c, audio, language):
+    """云端识别。api_style：
+    chat_audio      —— POST {base}/chat/completions，消息里带 input_audio（阿里百炼 qwen3-asr-flash 等）
+    transcriptions  —— POST {base}/audio/transcriptions，multipart 上传文件（OpenAI whisper-1、Groq 等）
+    """
+    import httpx
+    base_url = resolve_base_url(c["base_url"])
+    api_key = os.environ.get(c["api_key_env"].strip(), "").strip()
+    if not base_url:
+        raise RuntimeError(t("err_url", url=repr(c["base_url"])))
+    if not api_key:
+        raise RuntimeError(t("err_key_env", env=c["api_key_env"]))
+    url, data = base_url.rstrip("/"), wav_bytes(audio)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if c["api_style"] == "transcriptions":
+        form = {"model": c["model"], **({"language": language} if language else {})}
+        r = httpx.post(url + "/audio/transcriptions", headers=headers, timeout=c["timeout"],
+                       files={"file": ("audio.wav", data, "audio/wav")}, data=form)
+        if r.status_code >= 400:
+            raise RuntimeError(f"HTTP {r.status_code}：{r.text[:300]}")
+        return (r.json().get("text") or "").strip()
+    audio_part = {"type": "input_audio", "input_audio": {"data": "data:audio/wav;base64," + base64.b64encode(data).decode()}}
+    body = {"model": c["model"], "stream": False, "messages": [{"role": "user", "content": [audio_part]}]}
+    if "aliyuncs.com" in base_url:  # 百炼专有参数：指定语言、数字转成阿拉伯数字
+        body["asr_options"] = {"enable_itn": True, **({"language": language} if language else {})}
+    r = httpx.post(url + "/chat/completions", headers=headers, timeout=c["timeout"], json=body)
+    if r.status_code >= 400:
+        raise RuntimeError(f"HTTP {r.status_code}：{r.text[:300]}")
+    content = r.json()["choices"][0]["message"]["content"]
+    if isinstance(content, list):
+        content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return (content or "").strip()
 
 
 def llm_complete(llm, system, text, max_tokens=2048):
@@ -404,7 +474,7 @@ def apply_log_level(level):
 
 def save_config(cfg):
     order = ["hotkeys", "ui_language", "font_size", "normalize_punctuation", "auto_llm", "log_level",
-             "model", "language", "initial_prompt", "llm"]
+             "asr_engine", "model", "language", "initial_prompt", "cloud_asr", "llm"]
     lang = current_language()
     data = {"_说明" if lang == "zh" else "_help": CONFIG_HELP[lang]}
     data |= {k: cfg[k] for k in order if k in cfg} | {k: v for k, v in cfg.items() if k not in order and not k.startswith("_")}
@@ -524,6 +594,7 @@ class SettingsDialog:
     WHISPER_MODELS = ["large-v3-turbo", "medium", "small", "large-v3"]
     LANGUAGES = ["zh", "en", "ja", "ko"]
     LLM_MODELS = ["deepseek-v4-flash", "qwen3-max", "qwen-plus", "qwen-flash"]
+    CLOUD_ASR_MODELS = ["qwen3-asr-flash", "whisper-1", "whisper-large-v3-turbo", "gpt-4o-mini-transcribe"]
 
 
     def __init__(self, app):
@@ -643,12 +714,50 @@ class SettingsDialog:
         self._row(t("font_size"), tk.Spinbox(self.body, from_=8, to=40, textvariable=self.font_var, width=6,
                                         buttonbackground=c["bar"], **self.entry_style), sticky="w")
         self._section(t("sec_asr"))
-        self.model_var = tk.StringVar(value=cfg["model"])
-        self._row(t("whisper_model"), self._combo(self.model_var, self.WHISPER_MODELS))
+        self.engine_names = {"local": t("engine_local"), "cloud": t("engine_cloud")}
+        self.engine_var = tk.StringVar(value=self.engine_names[cfg["asr_engine"]])
+        cb = self._combo(self.engine_var, list(self.engine_names.values()), width=22)
+        cb.configure(state="readonly")
+        cb.bind("<<ComboboxSelected>>", lambda e: self._select_engine(self._engine()))
+        self._row(t("asr_engine"), cb, sticky="w")
+        # 本机 / 云端各一组，放在同一行位置，只显示选中的那组
+        outer_body, outer_row = self.body, self.row
+        self.engine_frames = {}
+        for engine in ASR_ENGINES:
+            f = tk.Frame(outer_body, bg=c["bg"])
+            f.columnconfigure(0, minsize=self.label_width)
+            f.columnconfigure(1, weight=1)
+            f.grid(row=outer_row, column=0, columnspan=2, sticky="we")
+            self.body, self.row = f, 0
+            self.engine_frames[engine] = f
+            if engine == "local":
+                self.model_var = tk.StringVar(value=cfg["model"])
+                self._row(t("whisper_model"), self._combo(self.model_var, self.WHISPER_MODELS))
+                self.prompt_var = tk.StringVar(value=cfg["initial_prompt"])
+                self._row(t("asr_prompt"), tk.Entry(self.body, textvariable=self.prompt_var, **self.entry_style))
+            else:
+                ca = cfg["cloud_asr"]
+                self._hint(t("hint_cloud"))
+                self.style_names = {"chat_audio": t("style_chat_audio"), "transcriptions": t("style_transcriptions")}
+                self.style_var = tk.StringVar(value=self.style_names[ca["api_style"]])
+                scb = self._combo(self.style_var, list(self.style_names.values()))
+                scb.configure(state="readonly")
+                self._row(t("api_style"), scb)
+                self.cloud_vars = {k: tk.StringVar(value=ca[k]) for k in ("model", "base_url", "api_key_env")}
+                self._row(t("cloud_model"), self._combo(self.cloud_vars["model"], self.CLOUD_ASR_MODELS))
+                self._row(t("api_url"), self._url_entry(self.cloud_vars["base_url"]))
+                self._row(t("api_key_env"), self._env_entry(self.cloud_vars["api_key_env"]))
+                test = tk.Frame(self.body, bg=c["bg"])
+                self._button(test, t("test_conn"), self._test_asr).pack(side="left")
+                self.asr_test_label = tk.Label(test, text="", bg=c["bg"], fg=c["muted"], font=(UI_FONT, 9), anchor="w",
+                                               justify="left", wraplength=px(330))
+                self.asr_test_label.pack(side="left", padx=(px(10), 0))
+                self._row("", test, sticky="w")
+                for var in [self.style_var, *self.cloud_vars.values()]:
+                    var.trace_add("write", lambda *_: self.asr_test_label.config(text=""))
+        self.body, self.row = outer_body, outer_row + 1
         self.lang_var = tk.StringVar(value=cfg["language"])
         self._row(t("asr_lang"), self._combo(self.lang_var, self.LANGUAGES, width=8), sticky="w")
-        self.prompt_var = tk.StringVar(value=cfg["initial_prompt"])
-        self._row(t("asr_prompt"), tk.Entry(self.body, textvariable=self.prompt_var, **self.entry_style))
         self.punct_var = tk.BooleanVar(value=cfg["normalize_punctuation"])
         self._row("", self._check(t("chk_punct"), self.punct_var))
         self.auto_llm_var = tk.BooleanVar(value=cfg["auto_llm"])
@@ -667,8 +776,10 @@ class SettingsDialog:
         self._button(foot, t("save"), self.save, primary=True).pack(side="right")
         self._button(foot, t("cancel"), self.close).pack(side="right", padx=px(8))
 
+        self._select_engine("cloud")
         w.update_idletasks()
         self.content.config(width=width, height=max(f.winfo_reqheight() for _, f, _, _ in self.tab_list))
+        self._select_engine(cfg["asr_engine"])
         self.content.pack_propagate(False)
         self.select_tab(self.tab_list[0][1])
         w.update_idletasks()
@@ -758,6 +869,45 @@ class SettingsDialog:
             f.grid() if p == proto else f.grid_remove()
         if hasattr(self, "test_label"):
             self.test_label.config(text="")
+
+    def _engine(self):
+        return {v: k for k, v in self.engine_names.items()}[self.engine_var.get()]
+
+    def _select_engine(self, engine):
+        for e, f in self.engine_frames.items():
+            f.grid() if e == engine else f.grid_remove()
+
+    def _collect_cloud_asr(self):
+        ca = dict(self.app.cfg["cloud_asr"])
+        ca.update({k: v.get().strip() for k, v in self.cloud_vars.items()})
+        ca["api_style"] = {v: k for k, v in self.style_names.items()}[self.style_var.get()]
+        return ca
+
+    def _test_asr(self):
+        """用当前填的云端配置识别一段 1 秒的静音，看接口通不通。"""
+        ca = self._collect_cloud_asr()
+        self.asr_test_label.config(text=t("testing", desc=ca["model"]), fg=COLORS["muted"])
+        box = {}
+
+        def work():
+            t0 = time.time()
+            try:
+                reply = cloud_transcribe(ca, np.zeros(SAMPLE_RATE, dtype=np.float32), self.lang_var.get().strip())
+                box["ok"] = t("test_ok", sec=time.time() - t0, reply=repr(reply[:20]))
+            except Exception as e:
+                box["err"] = f"✗ {str(e)[:160]}"
+
+        def poll():
+            if not self.alive():
+                return
+            if box:
+                ok = "ok" in box
+                self.asr_test_label.config(text=box.get("ok") or box.get("err"), fg=ACCENTS["idle"] if ok else ACCENTS["recording"])
+                log.info(f"[设置] 测试云端识别 {ca['model']}：{box.get('ok') or box.get('err')}")
+            else:
+                self.win.after(100, poll)
+        threading.Thread(target=work, name="asr-test", daemon=True).start()
+        poll()
 
     def _url_entry(self, var):
         """接口地址：可填 URL 或环境变量名，下面显示实际会用的地址。"""
@@ -892,6 +1042,8 @@ class SettingsDialog:
         new["language"] = self.lang_var.get().strip()
         new["initial_prompt"] = self.prompt_var.get().strip()
         new["normalize_punctuation"] = bool(self.punct_var.get())
+        new["asr_engine"] = self._engine()
+        new["cloud_asr"] = self._collect_cloud_asr()
         new["auto_llm"] = bool(self.auto_llm_var.get())
         new["log_level"] = {v: k for k, v in self.log_level_names.items()}[self.log_level_var.get()]
         new["ui_language"] = {v: k for k, v in self.ui_lang_names.items()}[self.ui_lang_var.get()]
@@ -907,7 +1059,7 @@ class SettingsDialog:
             for name in self.HOTKEY_NAMES:
                 msg = msg.replace(f"hotkeys.{name}", q("hk_" + name))
             self.error.config(text=msg.replace("llm.timeout", q("timeout")).replace("llm.model", q("model"))
-                              .replace("font_size", q("font_size")))
+                              .replace("font_size", q("font_size")).replace("cloud_asr.model", q("cloud_model")))
             tab = self.tab_keys if "hotkeys." in str(e) else self.tab_llm if "llm." in str(e) else self.tab_general
             self.select_tab(tab)
             return
@@ -1045,24 +1197,24 @@ class App:
         w, h = int(m["width"]), int(m["height"])
         n, gap = 5, max(2, w // 20)
         bw = (w - gap * (n - 1)) / n
-        t0 = time.time()
+        now = time.time()
         if self.state == "recording":
             level = min(1.0, self.recorder.level * 12)
             for i in range(n):
-                wobble = 0.55 + 0.45 * abs(np.sin(t * 9 + i * 1.3))
+                wobble = 0.55 + 0.45 * abs(np.sin(now * 9 + i * 1.3))
                 bh = max(3, h * min(1.0, 0.15 + level * wobble))
                 x = i * (bw + gap)
                 m.create_rectangle(x, (h - bh) / 2, x + bw, (h + bh) / 2, fill=ACCENTS["recording"], width=0)
         elif self.state in ("transcribing", "optimizing"):
             on_color, off_color = (ACCENTS["transcribing"], "#4a4130") if self.state == "transcribing" else (ACCENTS["optimizing"], "#3a3350")
             for i in range(n):
-                on = int(t * 6) % n == i
+                on = int(now * 6) % n == i
                 x = i * (bw + gap)
                 m.create_rectangle(x, h / 2 - 2, x + bw, h / 2 + 2, fill=on_color if on else off_color, width=0)
-        elif self.notice and t < self.notice[1]:
+        elif self.notice and now < self.notice[1]:
             kind = self.notice[0]
             if kind == "wait":  # 模型还在加载：灰点闪烁
-                if int(t * 4) % 2:
+                if int(now * 4) % 2:
                     m.create_oval(3, h / 2 - 4, 11, h / 2 + 4, fill=COLORS["muted"], width=0)
             else:  # empty=灰色空心圈（没内容），error=红色空心圈（出错）
                 color = ACCENTS["recording"] if kind == "error" else COLORS["muted"]
@@ -1126,6 +1278,10 @@ class App:
 
     # ---------- 后台线程 ----------
     def _load_model(self):
+        if self.cfg["asr_engine"] == "cloud":  # 云端识别不需要本地模型，秒开
+            log.info(f"[识别] 使用云端 {self.cfg['cloud_asr']['model']}（{self.cfg['cloud_asr']['api_style']}）")
+            self.events.put(("model", "cloud"))
+            return
         name = self.cfg["model"]
         log.info(f"[模型] 加载 {name} ...")
         t0 = time.time()
@@ -1139,17 +1295,22 @@ class App:
 
     def _transcribe(self, audio):
         language = self.cfg["language"]
+        t0 = time.time()
         try:
-            segments, _ = self.model.transcribe(
-                audio, language=language, initial_prompt=self.cfg["initial_prompt"], vad_filter=True, beam_size=5
-            )
-            sep = "" if language == "zh" else " "
-            text = sep.join(s.text.strip() for s in segments).strip()
+            if self.cfg["asr_engine"] == "cloud":
+                text = cloud_transcribe(self.cfg["cloud_asr"], audio, language)
+                log.info(f"[识别] 云端用时 {time.time() - t0:.1f}s")
+            else:
+                segments, _ = self.model.transcribe(
+                    audio, language=language, initial_prompt=self.cfg["initial_prompt"], vad_filter=True, beam_size=5
+                )
+                sep = "" if language == "zh" else " "
+                text = sep.join(s.text.strip() for s in segments).strip()
             if self.cfg["normalize_punctuation"]:
                 text = normalize_punctuation(text)
         except Exception as e:
             log.error(f"[识别] 出错：{e}")
-            text = ""
+            text = None  # None = 出错（红圈），"" = 没识别到内容（灰圈）
         self.events.put(("result", text))
 
     # ---------- 主线程事件循环 ----------
@@ -1257,8 +1418,8 @@ class App:
         log.info(f"[识别] {text!r}")
         self._set_state("editing")
         if not text:
-            self._notify("empty")
-            self.show("没识别到内容")
+            self._notify("error" if text is None else "empty", 2.5 if text is None else 1.5)
+            self.show("识别出错" if text is None else "没识别到内容")
             return
         start = self.text.index("insert")
         self.text.insert("insert", text)

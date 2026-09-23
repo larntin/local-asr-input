@@ -82,6 +82,19 @@ STRINGS = {
     "whisper_model": {"zh": "Whisper 模型", "en": "Whisper model"},
     "asr_lang": {"zh": "识别语言", "en": "Speech language"},
     "asr_prompt": {"zh": "识别提示词", "en": "Recognition prompt"},
+    "asr_engine": {"zh": "识别引擎", "en": "Speech engine"},
+    "engine_local": {"zh": "本机（faster-whisper）", "en": "This PC (faster-whisper)"},
+    "engine_cloud": {"zh": "云端 API", "en": "Cloud API"},
+    "api_style": {"zh": "接口类型", "en": "API type"},
+    "style_chat_audio": {"zh": "聊天接口 + 音频（通义 Qwen3-ASR 等）", "en": "Chat API with audio (e.g. Qwen3-ASR)"},
+    "style_transcriptions": {"zh": "OpenAI 转写接口 /audio/transcriptions", "en": "OpenAI transcription API (/audio/transcriptions)"},
+    "cloud_model": {"zh": "识别模型", "en": "ASR model"},
+    "hint_cloud": {"zh": "云端识别会把录音上传给服务商", "en": "Cloud recognition uploads your audio to the provider"},
+    "err_asr_engine": {"zh": "asr_engine 只能是 {opts}", "en": "asr_engine must be one of: {opts}"},
+    "err_api_style": {"zh": "cloud_asr.api_style 只能是 {opts}", "en": "cloud_asr.api_style must be one of: {opts}"},
+    "err_cloud_model": {"zh": "cloud_asr.model 不能为空", "en": "cloud_asr.model cannot be empty"},
+    "err_cloud_timeout": {"zh": "cloud_asr.timeout 要是 1~300 之间的整数（秒）",
+                          "en": "cloud_asr.timeout must be a whole number of seconds between 1 and 300"},
     "chk_punct": {"zh": "自动整理标点（﹐﹑ → ，、；挨着中文的英文标点转全角）",
                   "en": "Tidy Chinese punctuation (﹐﹑ → ，、; full-width next to Chinese)"},
     "chk_auto_llm": {"zh": "识别完成后自动用 ✦ LLM 优化（只优化新说的一段）",
@@ -141,6 +154,9 @@ CONFIG_HELP = {
         "log_level": "info = 详细（会记录识别出的文字）；error = 只记错误和警告。日志只保留最近 7 天",
         "model": "faster-whisper 模型名：large-v3-turbo（默认，快且准）/ medium 等，本机没有时首次会自动下载",
         "language": "识别语言：zh / en / ja 等",
+        "asr_engine": "识别引擎：local = 本机 faster-whisper（离线、免费）；cloud = 云端 API（录音会上传给服务商）",
+        "cloud_asr": "云端识别：api_style 选 chat_audio（聊天接口 + 音频，如阿里百炼 qwen3-asr-flash）或 transcriptions"
+                     "（OpenAI /audio/transcriptions，如 whisper-1）；base_url 可写 URL 或环境变量名；api_key_env 写存放 key 的环境变量名",
         "llm": "✦ 整理文字用的大模型。protocol 选 openai / anthropic，两种协议各存一套 base_url / api_key_env / model；"
                "base_url 可以直接写 URL，也可以写环境变量名；key 只写环境变量名，不写在这里；system_prompt 是整理规则",
         "生效": "一般用 ⚙ 设置修改；手动改完后在托盘图标右键点「重启」生效",
@@ -163,6 +179,10 @@ CONFIG_HELP = {
         "log_level": "info = detailed (includes recognized text); error = errors and warnings only. Logs are kept for 7 days",
         "model": "faster-whisper model: large-v3-turbo (default, fast and accurate) / medium etc., downloaded on first use",
         "language": "Speech language: en / zh / ja etc.",
+        "asr_engine": "Speech engine: local = faster-whisper on this PC (offline, free); cloud = a cloud API (your audio is uploaded to the provider)",
+        "cloud_asr": "Cloud recognition: api_style is chat_audio (chat API with audio, e.g. Alibaba Bailian qwen3-asr-flash) or "
+                     "transcriptions (OpenAI /audio/transcriptions, e.g. whisper-1); base_url is a URL or an environment "
+                     "variable name; api_key_env is the NAME of the variable holding your key",
         "llm": "✦ LLM for cleaning up text. protocol is openai or anthropic; each keeps its own base_url / api_key_env / model. "
                "base_url can be a URL or the name of an environment variable; api_key_env is the NAME of the variable holding "
                "your key (the key itself is never stored here); system_prompt holds the clean-up rules",
