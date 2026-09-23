@@ -402,7 +402,7 @@ class App:
         self.root.after(50, self._poll)
 
     def _build_ui(self):
-        """无边框深色面板：顶部状态色带 + 文本区 + 底部状态栏（动态状态图标 / ✦ LLM）。界面上不放文字。"""
+        """无边框深色面板：顶部拖拽区 + 文本区 + 底部状态栏（动态状态图标 / ✦ LLM）+ 最底部状态色带。界面上不放文字。"""
         c = COLORS
         self.root.overrideredirect(True)  # 去掉系统标题栏
         self.root.configure(bg=c["border"])
@@ -411,8 +411,13 @@ class App:
         panel = tk.Frame(self.root, bg=c["bg"])
         panel.pack(fill="both", expand=True, padx=1, pady=1)  # 外面一圈 1px 边框色
 
-        self.accent = tk.Frame(panel, bg=ACCENTS["loading"], height=max(2, round(3 * scale)))
-        self.accent.pack(fill="x", side="top")
+        accent_h, pad = max(2, round(3 * scale)), round(14 * scale)
+        # 顶部拖拽区：高度 = 原来的色带 + 文本框上内边距，光标离顶部的距离不变
+        drag_bar = tk.Frame(panel, bg=c["bg"], height=accent_h + pad, cursor="fleur")
+        drag_bar.pack(fill="x", side="top")
+
+        self.accent = tk.Frame(panel, bg=ACCENTS["loading"], height=accent_h)  # 状态色带放在最底部
+        self.accent.pack(fill="x", side="bottom")
 
         bar = tk.Frame(panel, bg=c["bar"])
         bar.pack(fill="x", side="bottom")
@@ -428,7 +433,8 @@ class App:
         self.text = tk.Text(panel, font=(UI_FONT, self.cfg["font_size"]), wrap="word", width=1, height=4, undo=True,
                             bg=c["bg"], fg=c["fg"], insertbackground=c["fg"], selectbackground="#3d4455",
                             relief="flat", borderwidth=0, highlightthickness=0,
-                            padx=round(18 * scale), pady=round(14 * scale), spacing2=round(4 * scale))
+                            padx=round(18 * scale), pady=0, spacing2=round(4 * scale))
+        tk.Frame(panel, bg=c["bg"], height=pad).pack(fill="x", side="bottom")  # 文本区下方留白，和原来一样
         self.text.pack(fill="both", expand=True)
 
         tk_seq = lambda name: parse_key(self.keys[name])[2]
@@ -437,8 +443,8 @@ class App:
         self.text.bind(tk_seq("llm"), lambda e: self.run_llm() or "break")
         self.root.bind(tk_seq("cancel"), lambda e: self.cancel())
 
-        # 没有标题栏，按住色带 / 状态栏拖动窗口
-        for w in (self.accent, bar, self.meter):
+        # 没有标题栏，按住顶部拖拽区 / 状态栏拖动窗口
+        for w in (drag_bar, self.accent, bar, self.meter):
             w.bind("<ButtonPress-1>", self._drag_start)
             w.bind("<B1-Motion>", self._drag_move)
 
