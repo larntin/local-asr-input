@@ -1,0 +1,28 @@
+{
+  "_说明": {
+    "hotkeys.start_record": "全局热键：开始录音（弹窗打开时再按 = 接着说，结果插到光标处）",
+    "hotkeys.stop_record": "全局热键：结束录音并识别；和 start_record 填同一个键就是来回切换",
+    "hotkeys.quit": "全局热键：退出程序",
+    "hotkeys.commit": "弹窗内：上屏（复制到剪贴板 + 粘贴到原窗口，不回车）",
+    "hotkeys.cancel": "弹窗内：取消",
+    "hotkeys.newline": "弹窗内：换行",
+    "hotkeys.llm": "弹窗内：用 LLM 优化提示词（开发中，也可以点右下角 ✦）",
+    "font_size": "输入框文字大小（磅）",
+    "按键写法": "修饰键 Ctrl / Alt / Shift / Win（Win 只能用于全局热键）+ 一个键，用 + 连接，如 Ctrl+Alt+F9。可用的键：F1~F24、A~Z、0~9、Enter、Esc、Space、Tab、Backspace、Insert、Delete、Home、End、PageUp、PageDown、Pause、ScrollLock",
+    "model": "faster-whisper 模型名：medium（已下载）/ large-v3-turbo（中文更准，首次约下载 1.6GB）等",
+    "生效": "改完后在托盘图标右键点「重启」生效"
+  },
+  "hotkeys": {
+    "start_record": "F9",
+    "stop_record": "F9",
+    "quit": "Ctrl+Alt+F9",
+    "commit": "Enter",
+    "cancel": "Esc",
+    "newline": "Shift+Enter",
+    "llm": "Ctrl+L"
+  },
+  "font_size": 13,
+  "model": "medium",
+  "language": "zh",
+  "initial_prompt": "以下是普通话的句子，使用简体中文，其中可能夹杂英文编程术语。"
+}
