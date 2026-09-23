@@ -466,16 +466,42 @@ class SettingsDialog:
 
         self.entry_style = dict(bg=c["bar"], fg=c["fg"], insertbackground=c["fg"], relief="flat", font=(UI_FONT, 10),
                                 highlightthickness=1, highlightbackground=c["border"], highlightcolor=ACCENTS["optimizing"])
-        body = tk.Frame(w, bg=c["bg"], padx=px(22), pady=px(14))
-        body.pack(fill="both", expand=True)
-        body.columnconfigure(1, weight=1)
-        self.body, self.row = body, 0
+        # 三个页签：✦ LLM / 快捷键 / 常规（显示 + 识别）
+        style.configure("Dark.TNotebook", background=c["bar"], borderwidth=0, tabmargins=(px(14), px(8), 0, 0),
+                        bordercolor=c["bg"], lightcolor=c["bg"], darkcolor=c["bg"])  # 内容区不要亮边框
+        style.configure("Dark.TNotebook.Tab", background=c["bar"], foreground=c["muted"], borderwidth=0,
+                        padding=(px(18), px(7)), font=(UI_FONT, 10), lightcolor=c["bar"], bordercolor=c["bar"])
+        style.map("Dark.TNotebook.Tab", background=[("selected", c["bg"])], foreground=[("selected", c["llm_fg"])],
+                  lightcolor=[("selected", c["bg"])], bordercolor=[("selected", c["bg"])], expand=[("selected", (0, 0, 0, 0))])
+        style.layout("Dark.TNotebook.Tab", [("Notebook.tab", {"sticky": "nswe", "children": [
+            ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
+                ("Notebook.label", {"side": "top", "sticky": ""})]})]})])  # 去掉选中页签的虚线焦点框
+        self.tabs = ttk.Notebook(w, style="Dark.TNotebook", takefocus=False)
+        self.tabs.pack(fill="both", expand=True)
 
-        self._section("快捷键", "点一下输入框，直接按下想要的组合键")
+        llm = cfg["llm"]
+        self.tab_llm = self._tab("✦ LLM")
+        self._hint("OpenAI 兼容接口；地址和 key 填环境变量名，key 不保存在配置里")
+        self.llm_model_var = tk.StringVar(value=llm["model"])
+        self._row("模型", self._combo(self.llm_model_var, self.LLM_MODELS))
+        self.base_env_var = tk.StringVar(value=llm["base_url_env"])
+        self._row("接口地址变量", self._env_entry(self.base_env_var))
+        self.key_env_var = tk.StringVar(value=llm["api_key_env"])
+        self._row("API Key 变量", self._env_entry(self.key_env_var))
+        self.timeout_var = tk.StringVar(value=str(llm["timeout"]))
+        self._row("超时（秒）", tk.Spinbox(self.body, from_=1, to=300, textvariable=self.timeout_var, width=6,
+                                        buttonbackground=c["bar"], **self.entry_style), sticky="w")
+        self.system_text = tk.Text(self.body, height=10, width=1, wrap="char", undo=True, padx=px(6), pady=px(4),
+                                   **self.entry_style)
+        self.system_text.insert("1.0", llm["system_prompt"])
+        self._row("整理规则", self.system_text, top=True)
+
+        self.tab_keys = self._tab("快捷键")
+        self._hint("点一下输入框，直接按下想要的组合键")
         self.hotkey_vars, self.entry_vars = {}, {}
         for name, label in self.HOTKEY_FIELDS:
             var = tk.StringVar(value=cfg["hotkeys"][name])
-            e = tk.Entry(body, textvariable=var, state="readonly", readonlybackground=c["bar"], cursor="hand2",
+            e = tk.Entry(self.body, textvariable=var, state="readonly", readonlybackground=c["bar"], cursor="hand2",
                          **{k: v for k, v in self.entry_style.items() if k != "bg"})
             e.bind("<FocusIn>", lambda ev, e=e: self._capture_start(e))
             e.bind("<FocusOut>", lambda ev: self._capture_stop())
@@ -484,37 +510,22 @@ class SettingsDialog:
             self._row(label, e)
             self.hotkey_vars[name] = self.entry_vars[e] = var
 
+        self.tab_general = self._tab("常规")
         self._section("显示")
         self.font_var = tk.StringVar(value=str(cfg["font_size"]))
-        self._row("输入框字号", tk.Spinbox(body, from_=8, to=40, textvariable=self.font_var, width=6,
+        self._row("输入框字号", tk.Spinbox(self.body, from_=8, to=40, textvariable=self.font_var, width=6,
                                         buttonbackground=c["bar"], **self.entry_style), sticky="w")
-
         self._section("识别")
         self.model_var = tk.StringVar(value=cfg["model"])
         self._row("Whisper 模型", self._combo(self.model_var, self.WHISPER_MODELS))
         self.lang_var = tk.StringVar(value=cfg["language"])
         self._row("语言", self._combo(self.lang_var, self.LANGUAGES, width=8), sticky="w")
         self.prompt_var = tk.StringVar(value=cfg["initial_prompt"])
-        self._row("识别提示词", tk.Entry(body, textvariable=self.prompt_var, **self.entry_style))
+        self._row("识别提示词", tk.Entry(self.body, textvariable=self.prompt_var, **self.entry_style))
         self.punct_var = tk.BooleanVar(value=cfg["normalize_punctuation"])
-        self._row("", tk.Checkbutton(body, text="自动整理标点（﹐﹑ → ，、；挨着中文的英文标点转全角）", variable=self.punct_var,
+        self._row("", tk.Checkbutton(self.body, text="自动整理标点（﹐﹑ → ，、；挨着中文的英文标点转全角）", variable=self.punct_var,
                                      bg=c["bg"], fg=c["fg"], selectcolor=c["bar"], activebackground=c["bg"],
                                      activeforeground=c["fg"], font=(UI_FONT, 10), anchor="w"))
-
-        llm = cfg["llm"]
-        self._section("✦ LLM 优化", "OpenAI 兼容接口；地址和 key 填环境变量名，key 不保存在配置里")
-        self.llm_model_var = tk.StringVar(value=llm["model"])
-        self._row("模型", self._combo(self.llm_model_var, self.LLM_MODELS))
-        self.base_env_var = tk.StringVar(value=llm["base_url_env"])
-        self._row("接口地址变量", self._env_entry(self.base_env_var))
-        self.key_env_var = tk.StringVar(value=llm["api_key_env"])
-        self._row("API Key 变量", self._env_entry(self.key_env_var))
-        self.timeout_var = tk.StringVar(value=str(llm["timeout"]))
-        self._row("超时（秒）", tk.Spinbox(body, from_=1, to=300, textvariable=self.timeout_var, width=6,
-                                        buttonbackground=c["bar"], **self.entry_style), sticky="w")
-        self.system_text = tk.Text(body, height=7, width=1, wrap="char", undo=True, padx=px(6), pady=px(4), **self.entry_style)
-        self.system_text.insert("1.0", llm["system_prompt"])
-        self._row("整理规则", self.system_text, top=True)
 
         foot = tk.Frame(w, bg=c["bar"], padx=px(22), pady=px(10))
         foot.pack(fill="x")
@@ -537,6 +548,20 @@ class SettingsDialog:
         self.focus()
 
     # ---------- 布局小工具 ----------
+    def _tab(self, title):
+        """新建一个页签，之后的 _section / _row 都加到这个页签里。"""
+        px = lambda v: round(v * self.scale)
+        f = tk.Frame(self.tabs, bg=COLORS["bg"], padx=px(22), pady=px(16))
+        f.columnconfigure(1, weight=1)
+        self.tabs.add(f, text=title)
+        self.body, self.row = f, 0
+        return f
+
+    def _hint(self, text):
+        px = lambda v: round(v * self.scale)
+        tk.Label(self.body, text=text, bg=COLORS["bg"], fg=COLORS["muted"], font=(UI_FONT, 9), anchor="w")             .grid(row=self.row, column=0, columnspan=2, sticky="w", pady=(0, px(10)))
+        self.row += 1
+
     def _section(self, title, hint=""):
         c, px = COLORS, lambda v: round(v * self.scale)
         f = tk.Frame(self.body, bg=c["bg"])
@@ -650,6 +675,8 @@ class SettingsDialog:
             for name, label in self.HOTKEY_FIELDS:  # 内部名字换成界面上的叫法
                 msg = msg.replace(f"hotkeys.{name}", f"「{label}」")
             self.error.config(text=msg.replace("llm.timeout", "「超时」").replace("font_size", "「输入框字号」"))
+            tab = self.tab_keys if "hotkeys." in str(e) else self.tab_llm if "llm." in str(e) else self.tab_general
+            self.tabs.select(tab)
             return
         save_config(new)
         log.info("[设置] 已保存，重启生效")
@@ -717,7 +744,7 @@ class App:
         bar = tk.Frame(panel, bg=c["bar"])
         bar.pack(fill="x", side="bottom")
         self.meter = tk.Canvas(bar, bg=c["bar"], highlightthickness=0, width=round(46 * scale), height=round(18 * scale))
-        self.meter.pack(side="left", padx=(round(12 * scale), 0), pady=round(7 * scale))
+        self.meter.pack(side="left", padx=(round(18 * scale), 0), pady=round(7 * scale))  # 左边和文字对齐
         self.llm_btn = tk.Label(bar, text="✦", bg=c["llm_bg"], fg=c["llm_fg"], font=(UI_FONT, 11, "bold"),
                                 padx=round(9 * scale), pady=round(2 * scale), cursor="hand2")
         self.llm_btn.pack(side="right", padx=round(10 * scale), pady=round(6 * scale))
@@ -802,12 +829,13 @@ class App:
             kind = self.notice[0]
             if kind == "wait":  # 模型还在加载：灰点闪烁
                 if int(t * 4) % 2:
-                    m.create_oval(w / 2 - 4, h / 2 - 4, w / 2 + 4, h / 2 + 4, fill=COLORS["muted"], width=0)
+                    m.create_oval(3, h / 2 - 4, 11, h / 2 + 4, fill=COLORS["muted"], width=0)
             else:  # empty=灰色空心圈（没内容），error=红色空心圈（出错）
                 color = ACCENTS["recording"] if kind == "error" else COLORS["muted"]
-                m.create_oval(w / 2 - 6, h / 2 - 6, w / 2 + 6, h / 2 + 6, outline=color, width=2)
+                m.create_oval(1, h / 2 - 6, 13, h / 2 + 6, outline=color, width=2)
         else:
-            m.create_oval(w / 2 - 4, h / 2 - 4, w / 2 + 4, h / 2 + 4, fill=ACCENTS.get(self.state, ACCENTS["idle"]), width=0)
+            # 圆点靠左画（和空心圈同一个圆心），不要居中在音量条的宽度里
+            m.create_oval(3, h / 2 - 4, 11, h / 2 + 4, fill=ACCENTS.get(self.state, ACCENTS["idle"]), width=0)
         self.root.after(60, self._animate)
 
     def run_llm(self):
