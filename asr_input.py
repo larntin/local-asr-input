@@ -235,8 +235,8 @@ DEFAULT_CONFIG = {
         "hotkeys.newline": "弹窗内：换行",
         "hotkeys.llm": "弹窗内：用 LLM 优化提示词（开发中，也可以点右下角 ✦）",
         "font_size": "输入框文字大小（磅）",
-        "llm": "✦ 优化提示词用的大模型（OpenAI 兼容接口，默认阿里百炼）。base_url_env / api_key_env 填环境变量名，"
-               "key 不写在这里；model 可换 qwen3-max、qwen-plus 等；system_prompt 是整理规则",
+        "llm": "✦ 优化提示词用的大模型。protocol 选 openai / anthropic，两种协议各存一套 base_url / api_key_env / model；"
+               "base_url 可以直接写 URL，也可以写环境变量名；key 只写环境变量名，不写在这里；system_prompt 是整理规则",
         "normalize_punctuation": "true：把 ﹐﹑ 等小号标点、挨着中文的英文标点整理成正常中文标点",
         "auto_llm": "true：识别完成后自动用 LLM 优化新说的这一段（太短的不优化）",
         "log_level": "info = 详细（会记录识别出的文字）；error = 只记错误和警告。日志只保留最近 7 天",
@@ -263,9 +263,10 @@ DEFAULT_CONFIG = {
     "language": "zh",
     "initial_prompt": "以下是普通话的句子，使用简体中文，其中可能夹杂英文编程术语。",
     "llm": {
-        "base_url_env": "OPENAI_COMPAT_BASE_URL",
-        "api_key_env": "BAILIAN_API_KEY",
-        "model": "deepseek-v4-flash",
+        "protocol": "openai",
+        "openai": {"base_url": "OPENAI_COMPAT_BASE_URL", "api_key_env": "BAILIAN_API_KEY", "model": "deepseek-v4-flash"},
+        "anthropic": {"base_url": "https://dashscope.aliyuncs.com/apps/anthropic", "api_key_env": "BAILIAN_API_KEY",
+                      "model": "deepseek-v4-flash"},
         "timeout": 30,
         "system_prompt": (
             "你是提示词整理助手。用户给你的是一段语音识别出来的口述文字，要发给 AI 编程助手（Claude Code / Codex）。请：\n"
@@ -292,9 +293,24 @@ def load_config():
         user = json.load(f)
     cfg = {**DEFAULT_CONFIG, **user,
            "hotkeys": {**DEFAULT_CONFIG["hotkeys"], **user.get("hotkeys", {})},
-           "llm": {**DEFAULT_CONFIG["llm"], **user.get("llm", {})}}
+           "llm": merge_llm(user.get("llm", {}))}
     validate_config(cfg)
     return cfg
+
+
+def merge_llm(user_llm):
+    """llm 配置补齐默认值；旧版平铺的 base_url_env / api_key_env / model 迁移到 openai 那一套里。"""
+    d, u = DEFAULT_CONFIG["llm"], dict(user_llm)
+    legacy = {}
+    if "base_url_env" in u:
+        legacy["base_url"] = u.pop("base_url_env")
+    for k in ("api_key_env", "model"):
+        if k in u:
+            legacy[k] = u.pop(k)
+    merged = {**d, **u}
+    for proto in LLM_PROTOCOLS:
+        merged[proto] = {**d[proto], **(legacy if proto == "openai" else {}), **u.get(proto, {})}
+    return merged
 
 
 def validate_config(cfg):
@@ -317,6 +333,11 @@ def validate_config(cfg):
             seen[parsed[name]] = name
     if not (isinstance(cfg["font_size"], int) and 8 <= cfg["font_size"] <= 40):
         raise ValueError("font_size 要是 8~40 之间的整数")
+    llm = cfg["llm"]
+    if llm["protocol"] not in LLM_PROTOCOLS:
+        raise ValueError(f"llm.protocol 只能是 {' / '.join(LLM_PROTOCOLS)}")
+    if not llm[llm["protocol"]]["model"].strip():
+        raise ValueError("llm.model 不能为空")
     if cfg["log_level"] not in LOG_LEVELS:
         raise ValueError(f"log_level 只能是 {' / '.join(LOG_LEVELS)}")
     if not (isinstance(cfg["llm"]["timeout"], int) and 1 <= cfg["llm"]["timeout"] <= 300):
@@ -325,6 +346,51 @@ def validate_config(cfg):
 
 LOG_LEVELS = {"info": logging.INFO, "error": logging.WARNING}  # error 档也保留警告，出问题时更好查
 AUTO_LLM_MIN_CHARS = 6  # 自动优化时，少于这么多字（如「好的」「继续」）直接保留原文
+
+
+LLM_PROTOCOLS = {"openai": "OpenAI", "anthropic": "Anthropic"}
+
+
+def resolve_base_url(value):
+    """接口地址可以直接写 URL，也可以写环境变量名（取它的值）。"""
+    v = (value or "").strip()
+    return v if v.lower().startswith(("http://", "https://")) else os.environ.get(v, "").strip()
+
+
+def describe_llm(llm):
+    """「Anthropic · deepseek-v4-flash」这样的简短描述，给界面和日志用。"""
+    return f"{LLM_PROTOCOLS[llm['protocol']]} · {llm[llm['protocol']]['model']}"
+
+
+def llm_complete(llm, system, text, max_tokens=2048):
+    """按 llm["protocol"] 走 OpenAI 或 Anthropic 协议，返回回复文字；出错抛异常。"""
+    proto = llm["protocol"]
+    prof = llm[proto]
+    base_url = resolve_base_url(prof["base_url"])
+    api_key = os.environ.get(prof["api_key_env"].strip(), "").strip()
+    if not base_url:
+        raise RuntimeError(f"接口地址 {prof['base_url']!r} 既不是 URL，也不是已设置的环境变量")
+    if not api_key:
+        raise RuntimeError(f"环境变量 {prof['api_key_env']} 没有设置")
+    if proto == "openai":
+        from openai import OpenAI  # 用到时才导入，不拖慢启动
+        client = OpenAI(base_url=base_url, api_key=api_key, timeout=llm["timeout"])
+        resp = client.chat.completions.create(
+            model=prof["model"], temperature=0.2, extra_body={"enable_thinking": False},
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": text}],
+        )
+        return (resp.choices[0].message.content or "").strip()
+    # Anthropic Messages API：地址写到 /v1 为止或写到根都行
+    import httpx
+    url = base_url.rstrip("/")
+    url += "/messages" if url.endswith("/v1") else "/v1/messages"
+    r = httpx.post(url, timeout=llm["timeout"], headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                   json={"model": prof["model"], "max_tokens": max_tokens, "temperature": 0.2, "system": system,
+                         "thinking": {"type": "disabled"},  # 不关的话模型先「思考」，又慢又可能把额度用光、正文为空
+                         "messages": [{"role": "user", "content": text}]})
+    if r.status_code >= 400:
+        raise RuntimeError(f"HTTP {r.status_code}：{r.text[:300]}")
+    return "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text").strip()
 
 
 def apply_log_level(level):
@@ -494,17 +560,51 @@ class SettingsDialog:
 
         llm = cfg["llm"]
         self.tab_llm = self._tab("✦ LLM")
-        self._hint("OpenAI 兼容接口；地址和 key 填环境变量名，key 不保存在配置里")
-        self.llm_model_var = tk.StringVar(value=llm["model"])
-        self._row("模型", self._combo(self.llm_model_var, self.LLM_MODELS))
-        self.base_env_var = tk.StringVar(value=llm["base_url_env"])
-        self._row("接口地址变量", self._env_entry(self.base_env_var))
-        self.key_env_var = tk.StringVar(value=llm["api_key_env"])
-        self._row("API Key 变量", self._env_entry(self.key_env_var))
+        saved_url = resolve_base_url(llm[llm["protocol"]]["base_url"]) or "（地址无效）"
+        cur = tk.Label(self.body, text=f"当前生效：{describe_llm(llm)}\n{saved_url}", bg=c["bg"], fg=c["llm_fg"],
+                       font=(UI_FONT, 9), anchor="w", justify="left")
+        cur.grid(row=self.row, column=0, columnspan=2, sticky="w", pady=(0, px(10)))
+        self.row += 1
+
+        # 协议切换：两套配置各自保存，切换只是换显示哪一套
+        self.proto_var = tk.StringVar(value=llm["protocol"])
+        seg = tk.Frame(self.body, bg=c["border"], padx=1, pady=1)
+        self.proto_btns = {}
+        for proto, name in LLM_PROTOCOLS.items():
+            b = tk.Label(seg, text=name, font=(UI_FONT, 10), padx=px(16), pady=px(3), cursor="hand2")
+            b.pack(side="left")
+            b.bind("<Button-1>", lambda e, proto=proto: self._select_proto(proto))
+            self.proto_btns[proto] = b
+        self._row("协议", seg, sticky="w")
+
+        self.proto_vars, self.proto_frames = {}, {}
+        outer_body, outer_row = self.body, self.row
+        for proto in LLM_PROTOCOLS:
+            f = tk.Frame(outer_body, bg=c["bg"])
+            f.columnconfigure(0, minsize=px(110))
+            f.columnconfigure(1, weight=1)
+            f.grid(row=outer_row, column=0, columnspan=2, sticky="we")
+            self.body, self.row = f, 0
+            v = {k: tk.StringVar(value=llm[proto][k]) for k in ("model", "base_url", "api_key_env")}
+            self._row("模型", self._combo(v["model"], self.LLM_MODELS))
+            self._row("接口地址", self._url_entry(v["base_url"]))
+            self._row("API Key 变量", self._env_entry(v["api_key_env"]))
+            for var in v.values():  # 改了配置，上次的测试结果就不作数了
+                var.trace_add("write", lambda *_: hasattr(self, "test_label") and self.test_label.config(text=""))
+            self.proto_vars[proto], self.proto_frames[proto] = v, f
+        self.body, self.row = outer_body, outer_row + 1
+
+        test = tk.Frame(self.body, bg=c["bg"])
+        self._button(test, "测试连接", self._test_llm).pack(side="left")
+        self.test_label = tk.Label(test, text="", bg=c["bg"], fg=c["muted"], font=(UI_FONT, 9), anchor="w",
+                                   justify="left", wraplength=px(330))
+        self.test_label.pack(side="left", padx=(px(10), 0))
+        self._row("", test, sticky="w")
+        self._select_proto(llm["protocol"])
         self.timeout_var = tk.StringVar(value=str(llm["timeout"]))
         self._row("超时（秒）", tk.Spinbox(self.body, from_=1, to=300, textvariable=self.timeout_var, width=6,
                                         buttonbackground=c["bar"], **self.entry_style), sticky="w")
-        self.system_text = tk.Text(self.body, height=10, width=1, wrap="char", undo=True, padx=px(6), pady=px(4),
+        self.system_text = tk.Text(self.body, height=7, width=1, wrap="char", undo=True, padx=px(6), pady=px(4),
                                    **self.entry_style)
         self.system_text.insert("1.0", llm["system_prompt"])
         self._row("整理规则", self.system_text, top=True)
@@ -635,6 +735,71 @@ class SettingsDialog:
             cb.configure(width=width)
         return cb
 
+    def _select_proto(self, proto):
+        c = COLORS
+        self.proto_var.set(proto)
+        for p, b in self.proto_btns.items():
+            b.config(bg=c["llm_bg"] if p == proto else c["bar"], fg=c["llm_fg"] if p == proto else c["muted"])
+        for p, f in self.proto_frames.items():
+            f.grid() if p == proto else f.grid_remove()
+        if hasattr(self, "test_label"):
+            self.test_label.config(text="")
+
+    def _url_entry(self, var):
+        """接口地址：可填 URL 或环境变量名，下面显示实际会用的地址。"""
+        c = COLORS
+        f = tk.Frame(self.body, bg=c["bg"])
+        tk.Entry(f, textvariable=var, **self.entry_style).pack(fill="x", ipady=round(2 * self.scale))
+        shown = tk.Label(f, bg=c["bg"], font=(UI_FONT, 9), anchor="w", justify="left", wraplength=round(420 * self.scale))
+        shown.pack(fill="x")
+
+        def refresh(*_):
+            url = resolve_base_url(var.get())
+            shown.config(text=f"→ {url}" if url else "✗ 不是 URL，也不是已设置的环境变量",
+                         fg=c["muted"] if url else ACCENTS["recording"])
+        var.trace_add("write", refresh)
+        refresh()
+        return f
+
+    def _collect_llm(self):
+        """对话框里当前填的 LLM 配置（未保存的也算）。"""
+        llm = json.loads(json.dumps(self.app.cfg["llm"]))
+        llm["protocol"] = self.proto_var.get()
+        for proto, v in self.proto_vars.items():
+            llm[proto] = {k: var.get().strip() for k, var in v.items()}
+        llm["system_prompt"] = self.system_text.get("1.0", "end-1c").strip()
+        try:
+            llm["timeout"] = int(self.timeout_var.get())
+        except ValueError:
+            pass
+        return llm
+
+    def _test_llm(self):
+        """用当前填的配置发一条很短的请求，看通不通。"""
+        llm = self._collect_llm()
+        self.test_label.config(text=f"测试中…（{describe_llm(llm)}）", fg=COLORS["muted"])
+        box = {}
+
+        def work():
+            t = time.time()
+            try:
+                reply = llm_complete(llm, "只回复 OK 两个字母。", "ping", max_tokens=16)
+                box["ok"] = f"✓ 连接成功，{time.time() - t:.1f}s，回复：{reply[:20]}"
+            except Exception as e:
+                box["err"] = f"✗ {str(e)[:160]}"
+
+        def poll():
+            if not self.alive():
+                return
+            if box:
+                ok = "ok" in box
+                self.test_label.config(text=box.get("ok") or box.get("err"), fg=ACCENTS["idle"] if ok else ACCENTS["recording"])
+                log.info(f"[设置] 测试 {describe_llm(llm)}：{box.get('ok') or box.get('err')}")
+            else:
+                self.win.after(100, poll)
+        threading.Thread(target=work, name="llm-test", daemon=True).start()
+        poll()
+
     def _env_entry(self, var):
         """环境变量名输入框，右边显示这个变量当前有没有设置。"""
         c = COLORS
@@ -715,10 +880,8 @@ class SettingsDialog:
         new["normalize_punctuation"] = bool(self.punct_var.get())
         new["auto_llm"] = bool(self.auto_llm_var.get())
         new["log_level"] = {v: k for k, v in self.LOG_LEVEL_NAMES.items()}[self.log_level_var.get()]
-        new["llm"].update(model=self.llm_model_var.get().strip(), base_url_env=self.base_env_var.get().strip(),
-                          api_key_env=self.key_env_var.get().strip(),
-                          system_prompt=self.system_text.get("1.0", "end-1c").strip())
-        if not new["model"] or not new["llm"]["model"]:
+        new["llm"] = self._collect_llm()
+        if not new["model"]:
             self.error.config(text="模型名不能为空")
             return
         try:
@@ -727,7 +890,8 @@ class SettingsDialog:
             msg = str(e)
             for name, label in self.HOTKEY_FIELDS:  # 内部名字换成界面上的叫法
                 msg = msg.replace(f"hotkeys.{name}", f"「{label}」")
-            self.error.config(text=msg.replace("llm.timeout", "「超时」").replace("font_size", "「输入框字号」"))
+            self.error.config(text=msg.replace("llm.timeout", "「超时」").replace("llm.model", "「LLM 模型」")
+                              .replace("font_size", "「输入框字号」"))
             tab = self.tab_keys if "hotkeys." in str(e) else self.tab_llm if "llm." in str(e) else self.tab_general
             self.select_tab(tab)
             return
@@ -765,6 +929,7 @@ class App:
             "asr_input", make_icon(TRAY_COLORS["loading"]), "语音输入：" + self._tray_text(),
             menu=pystray.Menu(
                 pystray.MenuItem(lambda item: "状态：" + self._tray_text(), None, enabled=False),
+                pystray.MenuItem(lambda item: "LLM：" + describe_llm(self.cfg["llm"]), None, enabled=False),
                 pystray.MenuItem("设置", lambda: self.events.put(("settings", None))),
                 pystray.MenuItem("重启（重新读取配置）", lambda: self.events.put(("restart", None))),
                 pystray.MenuItem("打开日志", lambda: os.startfile(LOG_FILE)),
@@ -906,7 +1071,7 @@ class App:
         self.root.after(250, lambda: self.llm_btn.config(bg=COLORS["llm_bg"], fg=COLORS["llm_fg"]))
         self.llm_seq += 1
         self._set_state("optimizing")
-        log.info(f"[LLM] 开始优化（{self.cfg['llm']['model']}）")
+        log.info(f"[LLM] 开始优化（{describe_llm(self.cfg['llm'])}）")
         threading.Thread(target=self._call_llm, args=(self.llm_seq, text), name="llm", daemon=True).start()
         self.text.focus_force()
 
@@ -914,16 +1079,7 @@ class App:
         c = self.cfg["llm"]
         t = time.time()
         try:
-            base_url, api_key = os.environ.get(c["base_url_env"]), os.environ.get(c["api_key_env"])
-            if not base_url or not api_key:
-                raise RuntimeError(f"环境变量 {c['base_url_env']} / {c['api_key_env']} 没有设置")
-            from openai import OpenAI  # 用到时才导入，不拖慢启动
-            client = OpenAI(base_url=base_url, api_key=api_key, timeout=c["timeout"])
-            resp = client.chat.completions.create(
-                model=c["model"], temperature=0.2, extra_body={"enable_thinking": False},
-                messages=[{"role": "system", "content": c["system_prompt"]}, {"role": "user", "content": text}],
-            )
-            result = (resp.choices[0].message.content or "").strip()
+            result = llm_complete(c, c["system_prompt"], text)
             log.info(f"[LLM] 完成，用时 {time.time() - t:.1f}s：{result!r}")
             self.events.put(("llm_result", (seq, result)))
         except Exception as e:

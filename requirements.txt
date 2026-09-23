@@ -4,3 +4,4 @@ numpy
 pystray
 pillow
 openai
+httpx
