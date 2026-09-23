@@ -1,6 +1,6 @@
 # 本声 · Local ASR Input
 
-[English](README.md) | **简体中文**
+[English](README.md) | **简体中文** · 国内镜像：[Gitee](https://gitee.com/larntin/local-asr-input)
 
 **免费、开源、本地识别的 Windows 语音输入工具。**
 按一下热键说话，本机 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) 离线识别，在弹窗里改好错字，一键上屏到任意窗口：终端、编辑器、聊天框都行。
@@ -28,6 +28,8 @@
 
 ```bash
 git clone https://github.com/larntin/local-asr-input.git
+# 国内访问 GitHub 慢的话，用 Gitee 镜像：
+# git clone https://gitee.com/larntin/local-asr-input.git
 cd local-asr-input
 pip install -r requirements.txt
 ```
@@ -115,7 +117,7 @@ python tests/run_all.py
 
 - [ ] 云端语音识别：接入各平台的语音识别接口（填 URL + Key），没有显卡的电脑也能又快又准
 - [ ] 打包成 exe，下载即用，不用装 Python
-- [ ] Gitee 镜像
+- [x] Gitee 镜像：https://gitee.com/larntin/local-asr-input
 
 ## 许可证
 

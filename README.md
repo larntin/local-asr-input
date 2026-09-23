@@ -1,6 +1,6 @@
 # Local ASR Input · 本声
 
-**English** | [简体中文](README.zh-CN.md)
+**English** | [简体中文](README.zh-CN.md) · Mirror in China: [Gitee](https://gitee.com/larntin/local-asr-input)
 
 **Free, open-source, local-first voice input for Windows.**
 Press a hotkey and speak. Your speech is transcribed on your own machine by [faster-whisper](https://github.com/SYSTRAN/faster-whisper), you fix any mistakes in a small popup, and one key pastes the text into whatever window you were in: terminal, editor, chat box, anything.
@@ -114,7 +114,7 @@ To add a language, add a translation for every entry in `STRINGS` and `CONFIG_HE
 
 - [ ] Cloud speech recognition: use a provider's speech-to-text API (URL + key), fast and accurate even without a GPU
 - [ ] A packaged `.exe`: download and run, no Python needed
-- [ ] Gitee mirror
+- [x] Gitee mirror: https://gitee.com/larntin/local-asr-input
 
 ## License
 
