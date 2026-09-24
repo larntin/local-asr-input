@@ -71,7 +71,7 @@ All of these can be changed in ⚙ Settings: click a box, then press the key com
 
 ## Settings
 
-Click ⚙ at the bottom right of the popup, or right-click the tray icon and choose Settings. Saving restarts the app automatically (about 4 seconds).
+Click ⚙ at the bottom right of the popup, or right-click the tray icon and choose Settings. Changes take effect as soon as you save, with no restart. If you switch the speech model, it reloads in the background: the tray icon turns gray until the new model is ready.
 
 <p align="center">
   <img src="docs/images/en/settings-llm.png" width="420" alt="LLM settings">

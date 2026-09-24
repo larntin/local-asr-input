@@ -1,6 +1,7 @@
 # 不注入真实按键：录键用 Tk event_generate，全局热键转交直接调 on_hotkey
 import sys, os, ctypes, json
 import tempfile
+import tkinter.font
 S = tempfile.mkdtemp(prefix="local_asr_input_test_")  # 测试用的配置、截图都放临时目录
 CFG = os.path.join(S, "settings_config.json")
 if os.path.exists(CFG): os.remove(CFG)
@@ -9,7 +10,7 @@ ctypes.windll.shcore.SetProcessDpiAwareness(1)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import local_asr_input as a
 from PIL import ImageGrab
-a.hotkey_loop = lambda events, hotkeys: None
+a.hotkey_loop = lambda events, hotkeys, result: result.put(None)
 a.load_model = lambda name, lang: (object(), "fake")
 app = a.App(a.load_config()); r = app.root
 res = {}
@@ -71,7 +72,8 @@ def step3():
     d.save()
     saved = json.load(open(CFG, encoding="utf-8"))
     res["saved"] = (saved["hotkeys"]["commit"], saved["font_size"], saved["llm"]["openai"]["model"], "_说明" in saved)
-    res["restart requested"] = ("restart", None) in got and not d.alive()
+    res["applied"] = (("restart", None) not in got and not d.alive() and app.keys["commit"] == "Ctrl+Enter"
+                      and tkinter.font.Font(font=app.text.cget("font")).actual("size") == 12)
     app.tray.stop(); r.destroy()
 def guard(fn):
     def run():
@@ -96,7 +98,7 @@ checks = [
  ("只按修饰键不改变", res.get("modifier only") == "Shift+Enter"),
  ("撞键时报错（中文名）", "同一个键" in res.get("dup error", "") and "「换行」" in res.get("dup error", "")),
  ("保存写入配置", res.get("saved") == ("Ctrl+Enter", 12, "qwen3-max", True)),
- ("保存后关闭并重启", res.get("restart requested")),
+ ("保存后关闭、立即生效、不重启", res.get("applied")),
 ]
 for n, ok in checks: print(("PASS " if ok else "FAIL ") + n)
 print("ALL PASS" if all(ok for _, ok in checks) else "SOME FAIL")

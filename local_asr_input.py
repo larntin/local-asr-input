@@ -11,7 +11,7 @@
       Ctrl+Alt+F9    全局：退出程序
   - 识别结果自动整理标点（﹐﹑ → ，、；挨着中文的英文标点 → 全角）
   - ✦ 默认走阿里百炼（OpenAI 兼容接口），地址和 key 从环境变量读，见 config.json 的 llm 项
-  - 所有设置集中在 ⚙ 设置对话框（弹窗右下角 ✦ 左边，或托盘右键「设置」），保存后自动重启生效
+  - 所有设置集中在 ⚙ 设置对话框（弹窗右下角 ✦ 左边，或托盘右键「设置」），保存后立即生效
   - 托盘图标颜色表示状态：灰=模型加载中 绿=就绪 红=录音中 橙=识别中 紫=LLM 优化中
     右键菜单：设置 / 重启（重新读取配置）/ 打开日志 / 退出
   - 只允许运行一个实例，重复启动会弹提示
@@ -87,6 +87,7 @@ user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintyp
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
 user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 kernel32.CreateMutexW.restype = wintypes.HANDLE
 kernel32.OpenProcess.restype = wintypes.HANDLE
 kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -97,7 +98,7 @@ VK_CONTROL, VK_MENU, VK_V = 0x11, 0x12, 0x56
 KEYEVENTF_KEYUP = 0x2
 INPUT_KEYBOARD = 1
 SW_RESTORE = 9
-WM_HOTKEY = 0x0312
+WM_HOTKEY, WM_QUIT = 0x0312, 0x0012
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4000
 
 
@@ -485,25 +486,33 @@ def save_config(cfg):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def hotkey_loop(events, hotkeys):
-    """用 RegisterHotKey 注册系统热键（不依赖键盘钩子，不会失效），收到后投递到事件队列。"""
+def hotkey_loop(events, hotkeys, result):
+    """用 RegisterHotKey 注册系统热键（不依赖键盘钩子，不会失效），收到后投递到事件队列。
+    注册结果放进 result：None = 成功，否则是注册失败的那个键。收到 WM_QUIT 后注销热键、线程结束。"""
     start, stop = parse_key(hotkeys["start_record"]), parse_key(hotkeys["stop_record"])
     if start[:2] == stop[:2]:
         regs = [("toggle", hotkeys["start_record"])]
     else:
         regs = [("start", hotkeys["start_record"]), ("stop", hotkeys["stop_record"])]
     regs.append(("quit", hotkeys["quit"]))
-    for hid, (action, spec) in enumerate(regs, 1):
-        mods, vk, _ = parse_key(spec)
-        if not user32.RegisterHotKey(None, hid, mods | MOD_NOREPEAT, vk):
-            events.put(("fatal", t("hotkey_failed", spec=spec, path=CONFIG_FILE)))
-            return
-    log.info("[热键] 已注册：" + "，".join(f"{a}={s}" for a, s in regs))
-    msg = wintypes.MSG()
-    while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-        if msg.message == WM_HOTKEY:
-            action = regs[msg.wParam - 1][0]
-            events.put(("hotkey", action))
+    registered = []
+    try:
+        for hid, (action, spec) in enumerate(regs, 1):
+            mods, vk, _ = parse_key(spec)
+            if not user32.RegisterHotKey(None, hid, mods | MOD_NOREPEAT, vk):
+                result.put(spec)
+                return
+            registered.append(hid)
+        log.info("[热键] 已注册：" + "，".join(f"{a}={s}" for a, s in regs))
+        result.put(None)
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            if msg.message == WM_HOTKEY:
+                action = regs[msg.wParam - 1][0]
+                events.put(("hotkey", action))
+    finally:
+        for hid in registered:  # 热键只能由注册它的线程注销
+            user32.UnregisterHotKey(None, hid)
 
 
 # ---------------- 托盘图标 ----------------
@@ -591,7 +600,7 @@ def load_model(name, language):
 
 # ---------------- 设置对话框 ----------------
 class SettingsDialog:
-    """⚙ 所有配置集中在这里；保存时校验、写 config.json，然后重启生效。"""
+    """⚙ 所有配置集中在这里；保存时校验、立即生效（不重启），再写 config.json。"""
 
     HOTKEY_NAMES = ("start_record", "stop_record", "quit", "commit", "cancel", "newline", "llm")
     WHISPER_MODELS = ["large-v3-turbo", "medium", "small", "large-v3"]
@@ -1066,10 +1075,15 @@ class SettingsDialog:
             tab = self.tab_keys if "hotkeys." in str(e) else self.tab_llm if "llm." in str(e) else self.tab_general
             self.select_tab(tab)
             return
+        try:
+            self.app.apply_config(new)
+        except ValueError as e:  # 新的全局热键被别的软件占了，已恢复旧键
+            self.error.config(text=str(e))
+            self.select_tab(self.tab_keys)
+            return
         save_config(new)
-        log.info("[设置] 已保存，重启生效")
+        log.info("[设置] 已保存")
         self.close()
-        self.app.events.put(("restart", None))
 
 
 # ---------------- 界面 ----------------
@@ -1086,6 +1100,8 @@ class App:
         self.notice = None  # (类型, 截止时间)：empty / error / wait
         self.llm_seq = 0  # 每次优化加 1，用来丢弃已放弃的旧结果
         self.settings = None  # 打开着的设置对话框
+        self.model_gen = 0  # 每次换模型加 1，用来丢弃已作废的加载结果
+        self.hotkey_thread = None
 
         self.root = tk.Tk()
         self.root.title(t("app_name"))
@@ -1101,16 +1117,86 @@ class App:
             menu=pystray.Menu(
                 pystray.MenuItem(lambda item: t("tray_status", s=self._tray_text()), None, enabled=False),
                 pystray.MenuItem(lambda item: t("tray_llm", s=describe_llm(self.cfg["llm"])), None, enabled=False),
-                pystray.MenuItem(t("menu_settings"), lambda: self.events.put(("settings", None))),
-                pystray.MenuItem(t("menu_restart"), lambda: self.events.put(("restart", None))),
-                pystray.MenuItem(t("menu_log"), lambda: os.startfile(LOG_FILE)),
-                pystray.MenuItem(t("menu_quit"), lambda: self.events.put(("quit", None))),
+                # 文字每次打开菜单时现取，切换界面语言后不用重建菜单
+                pystray.MenuItem(lambda item: t("menu_settings"), lambda: self.events.put(("settings", None))),
+                pystray.MenuItem(lambda item: t("menu_restart"), lambda: self.events.put(("restart", None))),
+                pystray.MenuItem(lambda item: t("menu_log"), lambda: os.startfile(LOG_FILE)),
+                pystray.MenuItem(lambda item: t("menu_quit"), lambda: self.events.put(("quit", None))),
             ),
         )
         threading.Thread(target=self.tray.run, name="tray", daemon=True).start()
-        threading.Thread(target=self._load_model, name="model", daemon=True).start()
-        threading.Thread(target=hotkey_loop, args=(self.events, self.keys), name="hotkey", daemon=True).start()
+        self._reload_model()
+        failed = self._start_hotkeys(self.keys)
+        if failed:
+            self.events.put(("fatal", t("hotkey_failed", spec=failed, path=CONFIG_FILE)))
         self.root.after(50, self._poll)
+
+    # ---------- 设置热加载 ----------
+    def apply_config(self, new):
+        """设置保存后直接用上新配置，不重启。新的全局热键注册不上（被别的软件占了）时恢复旧键，抛 ValueError。"""
+        old = self.cfg
+        if [new["hotkeys"][k] for k in GLOBAL_KEYS] != [old["hotkeys"][k] for k in GLOBAL_KEYS]:
+            self._stop_hotkeys()
+            failed = self._start_hotkeys(new["hotkeys"])
+            if failed:
+                lost = self._start_hotkeys(old["hotkeys"])
+                if lost:  # 旧键也注册不上了（极少见），没有热键没法用，只能退出
+                    self.events.put(("fatal", t("hotkey_failed", spec=lost, path=CONFIG_FILE)))
+                raise ValueError(t("hotkey_taken", spec=failed))
+        self.cfg, self.keys = new, new["hotkeys"]
+        if any(new["hotkeys"][k] != old["hotkeys"][k] for k in POPUP_KEYS):
+            self._bind_popup_keys(old["hotkeys"])
+        if new["font_size"] != old["font_size"]:
+            self._apply_font_size()
+        apply_log_level(new["log_level"])
+        set_ui_language(new["ui_language"])
+        # 本地模型只看引擎和模型名；识别语言、提示词每次识别时才传，不用重新加载
+        engine = lambda c: (c["asr_engine"], c["model"] if c["asr_engine"] == "local" else None)
+        if engine(new) != engine(old):
+            self._reload_model()
+        self._set_state(self.state)  # 刷新托盘：界面语言、模型加载中
+        log.info("[设置] 已生效")
+
+    def _start_hotkeys(self, hotkeys):
+        """开一个线程注册全局热键，等它注册完；返回注册失败的键，成功返回 None。"""
+        result = queue.Queue()
+        self.hotkey_thread = threading.Thread(target=hotkey_loop, args=(self.events, hotkeys, result),
+                                              name="hotkey", daemon=True)
+        self.hotkey_thread.start()
+        return result.get(timeout=5)
+
+    def _stop_hotkeys(self):
+        th = self.hotkey_thread
+        if th is not None and th.is_alive():
+            user32.PostThreadMessageW(th.native_id, WM_QUIT, 0, 0)  # 线程退出前会注销自己的热键
+            th.join(timeout=2)
+
+    def _reload_model(self):
+        self.model_gen += 1
+        self.model = None  # 加载完之前按热键会提示稍等；旧模型没人引用了就释放
+        threading.Thread(target=self._load_model, args=(self.model_gen, self.cfg), name="model", daemon=True).start()
+
+    def _bind_popup_keys(self, old=None):
+        """弹窗内快捷键：取消绑在整个窗口上，其余绑在文本框上。换键时先解绑旧键。"""
+        actions = {
+            "newline": (self.text, lambda e: self.text.insert("insert", "\n") or "break"),
+            "commit": (self.text, lambda e: self.send() or "break"),
+            "llm": (self.text, lambda e: self.run_llm() or "break"),
+            "cancel": (self.root, lambda e: self.cancel()),
+        }
+        if old:
+            for name, (widget, _) in actions.items():
+                widget.unbind(parse_key(old[name])[2])
+        for name, (widget, handler) in actions.items():
+            widget.bind(parse_key(self.keys[name])[2], handler)
+
+    def _apply_font_size(self):
+        """换字号后按新的行高重新算弹窗高度，底边位置不动。"""
+        w, h, x, y = map(int, re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", self.root.geometry()).groups())
+        self.text.config(font=(UI_FONT, self.cfg["font_size"]))
+        self.root.update_idletasks()
+        nh = self.root.winfo_reqheight()
+        self.root.geometry(f"{w}x{nh}+{x}+{y + h - nh}")
 
     def _build_ui(self):
         """无边框深色面板：顶部拖拽区 + 文本区 + 底部状态栏（动态状态图标 / ✦ LLM）+ 最底部状态色带。界面上不放文字。"""
@@ -1158,11 +1244,7 @@ class App:
         tk.Frame(panel, bg=c["bg"], height=pad).pack(fill="x", side="bottom")  # 文本区下方留白，和原来一样
         self.text.pack(fill="both", expand=True)
 
-        tk_seq = lambda name: parse_key(self.keys[name])[2]
-        self.text.bind(tk_seq("newline"), lambda e: self.text.insert("insert", "\n") or "break")
-        self.text.bind(tk_seq("commit"), lambda e: self.send() or "break")
-        self.text.bind(tk_seq("llm"), lambda e: self.run_llm() or "break")
-        self.root.bind(tk_seq("cancel"), lambda e: self.cancel())
+        self._bind_popup_keys()
 
         # 没有标题栏，按住顶部拖拽区 / 状态栏拖动窗口
         for w in (drag_bar, self.accent, bar, self.meter):
@@ -1280,21 +1362,22 @@ class App:
         self.notice = (kind, time.time() + seconds)
 
     # ---------- 后台线程 ----------
-    def _load_model(self):
-        if self.cfg["asr_engine"] == "cloud":  # 云端识别不需要本地模型，秒开
-            log.info(f"[识别] 使用云端 {self.cfg['cloud_asr']['model']}（{self.cfg['cloud_asr']['api_style']}）")
-            self.events.put(("model", "cloud"))
+    def _load_model(self, gen, cfg):
+        """gen：第几次加载。结果带着它发回去，设置里又换了模型的话旧结果作废。cfg 是发起加载时的配置。"""
+        if cfg["asr_engine"] == "cloud":  # 云端识别不需要本地模型，秒开
+            log.info(f"[识别] 使用云端 {cfg['cloud_asr']['model']}（{cfg['cloud_asr']['api_style']}）")
+            self.events.put(("model", (gen, "cloud")))
             return
-        name = self.cfg["model"]
+        name = cfg["model"]
         log.info(f"[模型] 加载 {name} ...")
         t0 = time.time()
         try:
-            model, device = load_model(name, self.cfg["language"])
-            self.events.put(("model", model))
+            model, device = load_model(name, cfg["language"])
+            self.events.put(("model", (gen, model)))
             log.info(f"[模型] 就绪：{device}，用时 {time.time() - t0:.1f}s。按 {self.keys['start_record']} 开始说话。")
         except Exception as e:
             log.error(f"[模型] {e}")
-            self.events.put(("fatal", t("model_failed", err=e, path=LOG_FILE)))
+            self.events.put(("model_failed", (gen, t("model_failed", err=e, path=LOG_FILE))))
 
     def _transcribe(self, audio):
         language = self.cfg["language"]
@@ -1323,8 +1406,14 @@ class App:
                 kind, payload = self.events.get_nowait()
                 if kind == "hotkey":
                     self.on_hotkey(payload)
-                elif kind == "model":
-                    self.model = payload
+                elif kind in ("model", "model_failed"):
+                    gen, value = payload
+                    if gen != self.model_gen:  # 加载期间设置里又换了模型，这次的结果作废
+                        continue
+                    if kind == "model_failed":
+                        self.events.put(("fatal", value))
+                        continue
+                    self.model = value
                     self._set_state("idle" if self.state == "loading" else self.state)
                 elif kind == "settings":
                     self.open_settings()

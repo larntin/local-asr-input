@@ -14,7 +14,7 @@ class FakeModel:
     def __init__(self): self.i = 0
     def transcribe(self, audio, **kw):
         t = SEGS[self.i]; self.i += 1; return iter([Seg(t)]), None
-a.hotkey_loop = lambda events, hotkeys: None
+a.hotkey_loop = lambda events, hotkeys, result: result.put(None)
 a.load_model = lambda name, lang: (FakeModel(), "fake")
 a.Recorder.start = lambda self: None
 a.Recorder.stop = lambda self: a.np.zeros(a.SAMPLE_RATE, a.np.float32)

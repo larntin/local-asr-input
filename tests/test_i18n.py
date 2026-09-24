@@ -51,7 +51,7 @@ except ValueError as e:
 checks.append(("英文校验信息", err.endswith("use the same key")))
 cfg = a.load_config()
 
-a.hotkey_loop = lambda events, hotkeys: None
+a.hotkey_loop = lambda events, hotkeys, result: result.put(None)
 a.load_model = lambda name, lang: (object(), "fake")
 app = a.App(cfg)
 r = app.root

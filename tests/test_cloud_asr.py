@@ -115,7 +115,7 @@ if os.environ.get("BAILIAN_API_KEY"):
     checks.append(("真实百炼识别正确", "函数" in text and "报错" in text))
 
 # 6) 程序流程：云端引擎不加载本地模型
-a.hotkey_loop = lambda events, hotkeys: None
+a.hotkey_loop = lambda events, hotkeys, result: result.put(None)
 a.load_model = lambda *args: (_ for _ in ()).throw(AssertionError("云端模式不应加载本地模型"))
 a.Recorder.start = lambda self: None
 a.Recorder.stop = lambda self: audio
@@ -184,7 +184,8 @@ def s4():
     app.events.put = lambda ev: got.append(ev)
     d.save()
     saved = json.load(open(CFG, encoding="utf-8"))
-    res["saved"] = (saved["asr_engine"], saved["cloud_asr"]["api_style"], saved["cloud_asr"]["model"], ("restart", None) in got)
+    res["saved"] = (saved["asr_engine"], saved["cloud_asr"]["api_style"], saved["cloud_asr"]["model"],
+                    ("restart", None) not in got and app.cfg["cloud_asr"]["model"] == "whisper-1")
     app.tray.stop()
     r.destroy()
 

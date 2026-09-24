@@ -8,7 +8,7 @@ os.environ["LOCAL_ASR_INPUT_CONFIG"] = os.path.join(tempfile.mkdtemp(prefix="loc
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import local_asr_input as a
 
-a.hotkey_loop = lambda events, hotkeys: None
+a.hotkey_loop = lambda events, hotkeys, result: result.put(None)
 a.load_model = lambda name, lang: (object(), "fake")
 app = a.App(a.load_config())
 errors = []

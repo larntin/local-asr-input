@@ -42,6 +42,8 @@ STRINGS = {
     "config_error": {"zh": "配置文件有误：\n{err}\n\n文件：{path}", "en": "There is a problem in the config file:\n{err}\n\nFile: {path}"},
     "hotkey_failed": {"zh": "热键 {spec} 注册失败，可能被其他软件占用了。\n请在 {path} 里换一个键。",
                       "en": "Could not register the hotkey {spec}; another program may be using it.\nPick a different key in {path}."},
+    "hotkey_taken": {"zh": "热键 {spec} 被其他软件占用了，换一个吧",
+                     "en": "The hotkey {spec} is already taken by another program. Pick a different one."},
     "model_failed": {"zh": "模型加载失败：{err}\n详见日志 {path}", "en": "Failed to load the speech model: {err}\nSee the log: {path}"},
     # ---- 配置校验 ----
     "err_key_unknown": {"zh": "无法识别的按键：{spec}", "en": "Unrecognized key: {spec}"},
@@ -102,7 +104,7 @@ STRINGS = {
     "log_level": {"zh": "日志级别", "en": "Log level"},
     "log_info": {"zh": "详细（会记录识别出的文字）", "en": "Detailed (includes recognized text)"},
     "log_error": {"zh": "仅错误和警告", "en": "Errors and warnings only"},
-    "save": {"zh": "保存并重启", "en": "Save & restart"},
+    "save": {"zh": "保存", "en": "Save"},
     "cancel": {"zh": "取消", "en": "Cancel"},
     "url_bad": {"zh": "✗ 不是 URL，也不是已设置的环境变量", "en": "✗ Not a URL or an environment variable that is set"},
     "testing": {"zh": "测试中…（{desc}）", "en": "Testing… ({desc})"},

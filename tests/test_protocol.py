@@ -42,7 +42,7 @@ try: a.llm_complete(llm, "x", "y"); checks.append(("key 缺失报错", False))
 except RuntimeError as e: checks.append(("key 缺失报错", "NO_SUCH_KEY_VAR" in str(e)))
 
 # 3) 设置对话框
-a.hotkey_loop = lambda events, hotkeys: None
+a.hotkey_loop = lambda events, hotkeys, result: result.put(None)
 a.load_model = lambda name, lang: (object(), "fake")
 app = a.App(cfg); r = app.root
 res = {}
@@ -76,7 +76,7 @@ def s3(txt):
     got = []; app.events.put = lambda ev: got.append(ev)
     d.save()
     saved = json.load(open(CFG, encoding="utf-8"))
-    res["saved"] = (saved["llm"]["protocol"], saved["llm"]["openai"]["model"], "base_url_env" in saved["llm"], ("restart", None) in got)
+    res["saved"] = (saved["llm"]["protocol"], saved["llm"]["openai"]["model"], "base_url_env" in saved["llm"], ("restart", None) not in got and app.cfg["llm"]["protocol"] == "anthropic")
     app.tray.stop(); r.destroy()
 r.after(800, s1)
 r.mainloop()

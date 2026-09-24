@@ -11,7 +11,7 @@ RAW = "搞成单立的﹐只能运行一个,或者是夹一个系统托盘,然�
 class Seg: text = RAW
 class FakeModel:
     def transcribe(self, audio, **kw): return iter([Seg()]), None
-a.hotkey_loop = lambda events, hotkeys: None
+a.hotkey_loop = lambda events, hotkeys, result: result.put(None)
 a.load_model = lambda name, lang: (FakeModel(), "fake")
 a.Recorder.start = lambda self: None
 a.Recorder.stop = lambda self: a.np.zeros(a.SAMPLE_RATE, a.np.float32)

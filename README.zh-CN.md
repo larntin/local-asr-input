@@ -74,7 +74,7 @@ pip install -r requirements.txt
 
 ## 设置
 
-点弹窗右下角的 ⚙，或托盘右键「设置」。保存后程序自动重启生效（约 4 秒）。
+点弹窗右下角的 ⚙，或托盘右键「设置」。保存后立即生效，不用重启。换识别模型时会在后台重新加载，托盘图标变灰，加载好就能用。
 
 <p align="center">
   <img src="docs/images/zh/settings-llm.png" width="420" alt="LLM 设置">
