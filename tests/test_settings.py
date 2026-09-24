@@ -40,6 +40,11 @@ def step3():
         xs.add(min(ch.winfo_rootx() for ch in f.grid_slaves(column=1)))
     res["input x"] = xs
     res["dialog size fixed"] = len(sizes) == 1
+    # 对话框按最高的页签定高；LLM 页签矮一截时，整理规则框往下撑满，不留大块空白
+    d.select_tab(d.tab_llm); d.win.update()
+    f, st = d.tab_llm, d.system_text
+    res["prompt gap"] = (f.winfo_rooty() + f.winfo_height()) - (st.winfo_rooty() + st.winfo_height())
+    res["gap limit"] = round(24 * d.scale)  # 页签下内边距 16 + 行距 3，再留点余量
     d.select_tab(d.tab_keys); d.win.update()  # 录键前先切到「快捷键」页签
     ents = {n: e for e, v in d.entry_vars.items() for n, vv in d.hotkey_vars.items() if vv is v}
     # 录入：在「上屏」框里按 Ctrl+Enter
@@ -91,6 +96,7 @@ checks = [
  ("切换页签时文字位置不动", res.get("tab labels fixed")),
  ("切换页签时对话框大小不变", res.get("dialog size fixed")),
  ("各页签输入框左边对齐", len(res.get("input x", ())) == 1),
+ ("整理规则框撑满 LLM 页签", res.get("prompt gap", 999) <= res.get("gap limit", 0)),
  ("撞键时自动切到快捷键页签", res.get("tab on error") == "快捷键"),
  ("录入 Ctrl+Enter", res.get("capture ctrl+enter") == "Ctrl+Enter"),
  ("录入 Esc 且不关对话框", res.get("capture esc") == ("Esc", True)),

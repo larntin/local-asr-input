@@ -700,7 +700,8 @@ class SettingsDialog:
         self.system_text = tk.Text(self.body, height=7, width=1, wrap="char", undo=True, padx=px(6), pady=px(4),
                                    **self.entry_style)
         self.system_text.insert("1.0", llm["system_prompt"])
-        self._row(t("system_prompt"), self.system_text, top=True)
+        self._row(t("system_prompt"), self.system_text, sticky="nsew", top=True)
+        self.body.rowconfigure(self.row - 1, weight=1)  # 对话框按最高的页签定高，多出来的高度都给整理规则框
 
         self.tab_keys = self._tab(t("tab_keys"))
         self._hint(t("hint_keys"))
